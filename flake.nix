@@ -42,7 +42,7 @@
               pkgs.playwright-driver
               pkgs.xvfb
 
-              pkgs.gnumake
+              pkgs.just
               pkgs.git
               pkgs.curl
               pkgs.jq
@@ -65,7 +65,7 @@
               echo "Go: $(go version | awk '{print $3}')"
               echo "Node: $(node --version)"
               echo "npm: $(npm --version)"
-              echo "Run project commands with make, npm, go, and docker compose from this shell."
+              echo "Run project commands with just, npm, go, and docker compose from this shell."
             '';
           };
         });

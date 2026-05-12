@@ -1,0 +1,15 @@
+.env
+.env.local
+.next/
+node_modules/
+coverage/
+dist/
+playwright-report/
+test-results/
+*.log
+*.tsbuildinfo
+backend/bin/
+backend/tmp/
+frontend/.next/
+frontend/node_modules/
+frontend/coverage/

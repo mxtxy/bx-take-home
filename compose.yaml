@@ -1,0 +1,72 @@
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-brix_scheduler}
+      MYSQL_USER: ${MYSQL_USER:-brix}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-brix_password}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root_password}
+    ports:
+      - "${MYSQL_HOST_PORT:-3307}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u$${MYSQL_USER} -p$${MYSQL_PASSWORD} --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  migrate:
+    build:
+      context: ./backend
+    command: ["/app/migrate"]
+    environment:
+      DATABASE_DSN: ${DATABASE_DSN:-brix:brix_password@tcp(mysql:3306)/brix_scheduler?parseTime=true&multiStatements=true}
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  seed:
+    build:
+      context: ./backend
+    command: ["/app/seed"]
+    environment:
+      DATABASE_DSN: ${DATABASE_DSN:-brix:brix_password@tcp(mysql:3306)/brix_scheduler?parseTime=true&multiStatements=true}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  backend:
+    build:
+      context: ./backend
+    command: ["/app/api"]
+    environment:
+      DATABASE_DSN: ${DATABASE_DSN:-brix:brix_password@tcp(mysql:3306)/brix_scheduler?parseTime=true}
+      APP_ENV: ${APP_ENV:-development}
+      BACKEND_PORT: ${BACKEND_PORT:-8080}
+      JWT_SECRET: ${JWT_SECRET:-dev_only_change_me}
+      COOKIE_NAME: ${COOKIE_NAME:-brix_session}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      CORS_ALLOWED_ORIGIN: ${CORS_ALLOWED_ORIGIN:-http://localhost:3000}
+    ports:
+      - "${BACKEND_PORT:-8080}:8080"
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8080}
+        NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-ws://localhost:8080/ws}
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8080}
+      NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-ws://localhost:8080/ws}
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    depends_on:
+      - backend
+
+volumes:
+  mysql_data:
