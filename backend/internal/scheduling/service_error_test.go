@@ -22,8 +22,57 @@ func TestNewService_DefaultClockAndHelpers(t *testing.T) {
 	if nullableInt64(nil) != nil {
 		t.Fatal("nil pointer should become nil SQL value")
 	}
+	if nullableTime(nil) != nil {
+		t.Fatal("nil time pointer should become nil SQL value")
+	}
 	if got := itoa(0); got != "0" {
 		t.Fatalf("itoa(0) = %q", got)
+	}
+	if scheduleLocation.String() != "Australia/Sydney" {
+		t.Fatalf("schedule location = %s", scheduleLocation)
+	}
+}
+
+func TestMustScheduleLocationPanicsForUnknownZone(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected panic")
+		}
+	}()
+	_ = mustScheduleLocation("Not/AZone")
+}
+
+func TestEnsureTechnicianAvailable_ReturnsScanError(t *testing.T) {
+	database, mock, tx := beginMockTx(t)
+	defer database.Close()
+	rows := sqlmock.NewRows([]string{"weekday", "starts_at", "ends_at"}).AddRow("bad-weekday", "08:00", "18:00")
+	mock.ExpectQuery("SELECT weekday").WithArgs(int64(1), int64(1)).WillReturnRows(rows)
+
+	err := ensureTechnicianAvailable(context.Background(), tx, 1, 1, testutil.FixedTime(), testutil.FixedTime().Add(2*time.Hour))
+	if err == nil {
+		t.Fatal("expected scan error")
+	}
+	assertSchedulingMock(t, mock)
+}
+
+func TestEnsureTechnicianAvailable_ReturnsRowsError(t *testing.T) {
+	database, mock, tx := beginMockTx(t)
+	defer database.Close()
+	rows := sqlmock.NewRows([]string{"weekday", "starts_at", "ends_at"}).AddRow(1, "19:00", "20:00").RowError(0, errors.New("rows failed"))
+	mock.ExpectQuery("SELECT weekday").WithArgs(int64(1), int64(1)).WillReturnRows(rows)
+
+	err := ensureTechnicianAvailable(context.Background(), tx, 1, 1, testutil.FixedTime(), testutil.FixedTime().Add(2*time.Hour))
+	if err == nil {
+		t.Fatal("expected rows error")
+	}
+	assertSchedulingMock(t, mock)
+}
+
+func TestWindowInsideAvailabilityRejectsCrossLocalDate(t *testing.T) {
+	rule := availabilityRuleRow{Weekday: 1, StartsAt: "08:00", EndsAt: "23:59"}
+	start := testutil.MustTime(t, "2026-05-12T13:00:00Z")
+	if windowInsideAvailability(rule, start, start.Add(2*time.Hour)) {
+		t.Fatal("expected cross-local-date window to be unavailable")
 	}
 }
 
@@ -87,11 +136,26 @@ func TestAssignJob_ReturnsQuoteUpdateError(t *testing.T) {
 	assertSchedulingMock(t, mock)
 }
 
+func TestAssignJob_ReturnsAuditLogError(t *testing.T) {
+	service, mock := newMockSchedulingService(t)
+	expectAssignBeforeInsert(mock)
+	mock.ExpectExec("INSERT INTO jobs").WillReturnResult(sqlmock.NewResult(42, 1))
+	mock.ExpectExec("UPDATE quotes SET status").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO schedule_audit_logs").WillReturnError(errors.New("audit failed"))
+
+	_, _, err := service.AssignJob(context.Background(), testutil.Manager1(), validAssignInput())
+	if err == nil {
+		t.Fatal("expected audit error")
+	}
+	assertSchedulingMock(t, mock)
+}
+
 func TestAssignJob_ReturnsNotificationError(t *testing.T) {
 	service, mock := newMockSchedulingService(t)
 	expectAssignBeforeInsert(mock)
 	mock.ExpectExec("INSERT INTO jobs").WillReturnResult(sqlmock.NewResult(42, 1))
 	mock.ExpectExec("UPDATE quotes SET status").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO schedule_audit_logs").WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec("INSERT INTO notifications").WillReturnError(errors.New("notification failed"))
 
 	_, _, err := service.AssignJob(context.Background(), testutil.Manager1(), validAssignInput())
@@ -106,6 +170,7 @@ func TestAssignJob_ReturnsCommitError(t *testing.T) {
 	expectAssignBeforeInsert(mock)
 	mock.ExpectExec("INSERT INTO jobs").WillReturnResult(sqlmock.NewResult(42, 1))
 	mock.ExpectExec("UPDATE quotes SET status").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO schedule_audit_logs").WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec("INSERT INTO notifications").WillReturnResult(sqlmock.NewResult(9, 1))
 	mock.ExpectCommit().WillReturnError(errors.New("commit failed"))
 
@@ -139,10 +204,24 @@ func TestRescheduleJob_ReturnsUpdateError(t *testing.T) {
 	assertSchedulingMock(t, mock)
 }
 
+func TestRescheduleJob_ReturnsAuditLogError(t *testing.T) {
+	service, mock := newMockSchedulingService(t)
+	expectRescheduleBeforeUpdate(mock, jobRowOptions{})
+	mock.ExpectExec("UPDATE jobs").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO schedule_audit_logs").WillReturnError(errors.New("audit failed"))
+
+	_, _, err := service.RescheduleJob(context.Background(), testutil.Manager1(), validRescheduleInput())
+	if err == nil {
+		t.Fatal("expected audit error")
+	}
+	assertSchedulingMock(t, mock)
+}
+
 func TestRescheduleJob_ReturnsTargetNotificationError(t *testing.T) {
 	service, mock := newMockSchedulingService(t)
 	expectRescheduleBeforeUpdate(mock, jobRowOptions{})
 	mock.ExpectExec("UPDATE jobs").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO schedule_audit_logs").WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec("INSERT INTO notifications").WillReturnError(errors.New("notification failed"))
 
 	_, _, err := service.RescheduleJob(context.Background(), testutil.Manager1(), validRescheduleInput())
@@ -156,6 +235,7 @@ func TestRescheduleJob_ReturnsPreviousTechnicianNotificationError(t *testing.T) 
 	service, mock := newMockSchedulingService(t)
 	expectRescheduleBeforeUpdate(mock, jobRowOptions{technicianID: 1, technicianUserID: 3})
 	mock.ExpectExec("UPDATE jobs").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO schedule_audit_logs").WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec("INSERT INTO notifications").WillReturnResult(sqlmock.NewResult(11, 1))
 	mock.ExpectExec("INSERT INTO notifications").WillReturnError(errors.New("previous notification failed"))
 
@@ -170,6 +250,7 @@ func TestRescheduleJob_ReturnsCommitError(t *testing.T) {
 	service, mock := newMockSchedulingService(t)
 	expectRescheduleBeforeUpdate(mock, jobRowOptions{technicianID: 2, technicianUserID: 4})
 	mock.ExpectExec("UPDATE jobs").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO schedule_audit_logs").WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec("INSERT INTO notifications").WillReturnResult(sqlmock.NewResult(11, 1))
 	mock.ExpectCommit().WillReturnError(errors.New("commit failed"))
 
@@ -203,10 +284,24 @@ func TestCompleteJob_ReturnsUpdateError(t *testing.T) {
 	assertSchedulingMock(t, mock)
 }
 
+func TestCompleteJob_ReturnsAuditLogError(t *testing.T) {
+	service, mock := newMockSchedulingService(t)
+	expectCompleteBeforeUpdate(mock)
+	mock.ExpectExec("UPDATE jobs SET status").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO schedule_audit_logs").WillReturnError(errors.New("audit failed"))
+
+	_, _, err := service.CompleteJob(context.Background(), testutil.Technician1(), domain.CompleteJobInput{JobID: 1})
+	if err == nil {
+		t.Fatal("expected audit error")
+	}
+	assertSchedulingMock(t, mock)
+}
+
 func TestCompleteJob_ReturnsNotificationError(t *testing.T) {
 	service, mock := newMockSchedulingService(t)
 	expectCompleteBeforeUpdate(mock)
 	mock.ExpectExec("UPDATE jobs SET status").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO schedule_audit_logs").WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec("INSERT INTO notifications").WillReturnError(errors.New("notification failed"))
 
 	_, _, err := service.CompleteJob(context.Background(), testutil.Technician1(), domain.CompleteJobInput{JobID: 1})
@@ -220,6 +315,7 @@ func TestCompleteJob_ReturnsCommitError(t *testing.T) {
 	service, mock := newMockSchedulingService(t)
 	expectCompleteBeforeUpdate(mock)
 	mock.ExpectExec("UPDATE jobs SET status").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO schedule_audit_logs").WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec("INSERT INTO notifications").WillReturnResult(sqlmock.NewResult(13, 1))
 	mock.ExpectCommit().WillReturnError(errors.New("commit failed"))
 
@@ -238,28 +334,34 @@ func TestSelectHelpers_ReturnGenericErrors(t *testing.T) {
 		{
 			name: "quote",
 			run: func(ctx context.Context, tx *sql.Tx) error {
-				_, err := selectQuoteForUpdate(ctx, tx, 1)
+				_, err := selectQuoteForUpdate(ctx, tx, 1, 1)
 				return err
 			},
 		},
 		{
 			name: "technician",
 			run: func(ctx context.Context, tx *sql.Tx) error {
-				_, err := selectTechnicianForUpdate(ctx, tx, 1)
+				_, err := selectTechnicianForUpdate(ctx, tx, 1, 1)
 				return err
 			},
 		},
 		{
 			name: "job",
 			run: func(ctx context.Context, tx *sql.Tx) error {
-				_, err := selectJobForUpdate(ctx, tx, 1)
+				_, err := selectJobForUpdate(ctx, tx, 1, 1)
 				return err
+			},
+		},
+		{
+			name: "availability",
+			run: func(ctx context.Context, tx *sql.Tx) error {
+				return ensureTechnicianAvailable(ctx, tx, 1, 1, testutil.FixedTime(), testutil.FixedTime().Add(2*time.Hour))
 			},
 		},
 		{
 			name: "overlap",
 			run: func(ctx context.Context, tx *sql.Tx) error {
-				return ensureNoOverlap(ctx, tx, 1, testutil.FixedTime(), testutil.FixedTime().Add(2*time.Hour), nil)
+				return ensureNoOverlap(ctx, tx, 1, 1, testutil.FixedTime(), testutil.FixedTime().Add(2*time.Hour), nil)
 			},
 		},
 	}
@@ -320,6 +422,7 @@ func expectAssignBeforeInsert(mock sqlmock.Sqlmock) {
 	mock.ExpectBegin()
 	expectQuote(mock, domain.QuoteUnscheduled)
 	expectTechnician(mock, 1, 3)
+	expectAvailability(mock, 1)
 	expectNoOverlap(mock)
 }
 
@@ -338,6 +441,7 @@ func expectRescheduleBeforeUpdate(mock sqlmock.Sqlmock, options jobRowOptions) {
 	mock.ExpectBegin()
 	expectJob(mock, domain.JobScheduled, options.technicianID, options.technicianUserID)
 	expectTechnician(mock, 2, 4)
+	expectAvailability(mock, 2)
 	expectNoOverlap(mock)
 }
 
@@ -347,30 +451,35 @@ func expectCompleteBeforeUpdate(mock sqlmock.Sqlmock) {
 }
 
 func expectQuote(mock sqlmock.Sqlmock, status domain.QuoteStatus) {
-	rows := sqlmock.NewRows([]string{"id", "customer_name", "description", "status"}).
-		AddRow(int64(1), "Acme Plumbing", "Replace tap", string(status))
-	mock.ExpectQuery("SELECT id, customer_name").WithArgs(int64(1)).WillReturnRows(rows)
+	rows := sqlmock.NewRows([]string{"id", "organization_id", "customer_name", "description", "status"}).
+		AddRow(int64(1), int64(1), "Acme Plumbing", "Replace tap", string(status))
+	mock.ExpectQuery("SELECT id, organization_id").WithArgs(int64(1), int64(1)).WillReturnRows(rows)
 }
 
 func expectTechnician(mock sqlmock.Sqlmock, technicianID int64, userID int64) {
-	rows := sqlmock.NewRows([]string{"id", "user_id", "display_name"}).
-		AddRow(technicianID, userID, "Tom Technician")
-	mock.ExpectQuery("SELECT t.id, t.user_id").WithArgs(technicianID).WillReturnRows(rows)
+	rows := sqlmock.NewRows([]string{"id", "organization_id", "user_id", "display_name"}).
+		AddRow(technicianID, int64(1), userID, "Tom Technician")
+	mock.ExpectQuery("SELECT t.id, u.organization_id").WithArgs(technicianID, int64(1)).WillReturnRows(rows)
 }
 
 func expectJob(mock sqlmock.Sqlmock, status domain.JobStatus, technicianID int64, technicianUserID int64) {
 	rows := sqlmock.NewRows([]string{
-		"id", "quote_id", "customer_name", "description",
+		"id", "organization_id", "quote_id", "customer_name", "description",
 		"technician_id", "technician_user_id", "technician_name",
 		"manager_id", "manager_user_id", "manager_name",
 		"starts_at", "ends_at", "status", "completed_at",
 	}).AddRow(
-		int64(1), int64(1), "Acme Plumbing", "Replace tap",
+		int64(1), int64(1), int64(1), "Acme Plumbing", "Replace tap",
 		technicianID, technicianUserID, "Tom Technician",
 		int64(1), int64(1), "Sarah Manager",
 		testutil.FixedTime(), testutil.FixedTime().Add(2*time.Hour), string(status), nil,
 	)
-	mock.ExpectQuery("SELECT").WithArgs(int64(1)).WillReturnRows(rows)
+	mock.ExpectQuery("SELECT").WithArgs(int64(1), int64(1)).WillReturnRows(rows)
+}
+
+func expectAvailability(mock sqlmock.Sqlmock, technicianID int64) {
+	rows := sqlmock.NewRows([]string{"weekday", "starts_at", "ends_at"}).AddRow(1, "08:00", "18:00")
+	mock.ExpectQuery("SELECT weekday").WithArgs(int64(1), technicianID).WillReturnRows(rows)
 }
 
 func expectNoOverlap(mock sqlmock.Sqlmock) {

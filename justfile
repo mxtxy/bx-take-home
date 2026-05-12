@@ -32,7 +32,7 @@ test: test-backend test-frontend test-e2e
 
 # Run Go backend tests
 test-backend:
-    docker compose -f compose.test.yaml up -d --wait mysql
+    docker compose -f compose.test.yaml up -d --wait --remove-orphans mysql
     cd backend && CGO_ENABLED=0 go test ./...
     backend/scripts/check-coverage.sh /tmp/bx-backend.cover
 

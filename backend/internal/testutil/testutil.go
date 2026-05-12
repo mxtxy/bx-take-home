@@ -69,8 +69,29 @@ func AcquireDatabaseLock(t *testing.T, database *sql.DB) {
 
 func ApplySchema(t *testing.T, database *sql.DB) {
 	t.Helper()
+	DropSchema(t, database)
 	if err := db.ApplySQLFile(context.Background(), database, filepath.Join("..", "..", "migrations", "001_init.sql")); err != nil {
 		t.Fatalf("apply schema: %v", err)
+	}
+}
+
+func DropSchema(t *testing.T, database *sql.DB) {
+	t.Helper()
+	if _, err := database.Exec(`
+		SET FOREIGN_KEY_CHECKS = 0;
+		DROP TABLE IF EXISTS schedule_audit_logs;
+		DROP TABLE IF EXISTS notifications;
+		DROP TABLE IF EXISTS sessions;
+		DROP TABLE IF EXISTS jobs;
+		DROP TABLE IF EXISTS quotes;
+		DROP TABLE IF EXISTS technician_availability_rules;
+		DROP TABLE IF EXISTS technicians;
+		DROP TABLE IF EXISTS managers;
+		DROP TABLE IF EXISTS users;
+		DROP TABLE IF EXISTS organizations;
+		SET FOREIGN_KEY_CHECKS = 1;
+	`); err != nil {
+		t.Fatalf("drop schema: %v", err)
 	}
 }
 
@@ -87,44 +108,72 @@ func ResetAndSeed(t *testing.T, database *sql.DB) {
 func Manager1() domain.Actor {
 	managerID := int64(1)
 	return domain.Actor{
-		UserID:      1,
-		Email:       "manager1@brix.test",
-		DisplayName: "Sarah Manager",
-		Role:        domain.RoleManager,
-		ManagerID:   &managerID,
+		UserID:         1,
+		OrganizationID: 1,
+		Email:          "manager1@brix.test",
+		DisplayName:    "Sarah Manager",
+		Role:           domain.RoleManager,
+		ManagerID:      &managerID,
 	}
 }
 
 func Manager2() domain.Actor {
 	managerID := int64(2)
 	return domain.Actor{
-		UserID:      2,
-		Email:       "manager2@brix.test",
-		DisplayName: "Alex Manager",
-		Role:        domain.RoleManager,
-		ManagerID:   &managerID,
+		UserID:         2,
+		OrganizationID: 1,
+		Email:          "manager2@brix.test",
+		DisplayName:    "Alex Manager",
+		Role:           domain.RoleManager,
+		ManagerID:      &managerID,
+	}
+}
+
+func Manager3() domain.Actor {
+	managerID := int64(3)
+	return domain.Actor{
+		UserID:         5,
+		OrganizationID: 2,
+		Email:          "manager3@other.test",
+		DisplayName:    "Other Org Manager",
+		Role:           domain.RoleManager,
+		ManagerID:      &managerID,
 	}
 }
 
 func Technician1() domain.Actor {
 	technicianID := int64(1)
 	return domain.Actor{
-		UserID:       3,
-		Email:        "technician1@brix.test",
-		DisplayName:  "Tom Technician",
-		Role:         domain.RoleTechnician,
-		TechnicianID: &technicianID,
+		UserID:         3,
+		OrganizationID: 1,
+		Email:          "technician1@brix.test",
+		DisplayName:    "Tom Technician",
+		Role:           domain.RoleTechnician,
+		TechnicianID:   &technicianID,
 	}
 }
 
 func Technician2() domain.Actor {
 	technicianID := int64(2)
 	return domain.Actor{
-		UserID:       4,
-		Email:        "technician2@brix.test",
-		DisplayName:  "Priya Technician",
-		Role:         domain.RoleTechnician,
-		TechnicianID: &technicianID,
+		UserID:         4,
+		OrganizationID: 1,
+		Email:          "technician2@brix.test",
+		DisplayName:    "Priya Technician",
+		Role:           domain.RoleTechnician,
+		TechnicianID:   &technicianID,
+	}
+}
+
+func Technician3() domain.Actor {
+	technicianID := int64(3)
+	return domain.Actor{
+		UserID:         6,
+		OrganizationID: 2,
+		Email:          "technician3@other.test",
+		DisplayName:    "Other Org Tech",
+		Role:           domain.RoleTechnician,
+		TechnicianID:   &technicianID,
 	}
 }
 
@@ -141,10 +190,14 @@ func InsertScheduledJob(t *testing.T, database *sql.DB, quoteID, technicianID, m
 	t.Helper()
 	start := MustTime(t, startsAt)
 	end := start.Add(2 * time.Hour)
+	var organizationID int64
+	if err := database.QueryRow(`SELECT organization_id FROM quotes WHERE id = ?`, quoteID).Scan(&organizationID); err != nil {
+		t.Fatalf("query quote organization: %v", err)
+	}
 	result, err := database.Exec(`
-		INSERT INTO jobs (quote_id, technician_id, manager_id, starts_at, ends_at, status)
-		VALUES (?, ?, ?, ?, ?, 'scheduled')
-	`, quoteID, technicianID, managerID, start, end)
+		INSERT INTO jobs (organization_id, quote_id, technician_id, manager_id, starts_at, ends_at, status)
+		VALUES (?, ?, ?, ?, ?, ?, 'scheduled')
+	`, organizationID, quoteID, technicianID, managerID, start, end)
 	if err != nil {
 		t.Fatalf("insert scheduled job: %v", err)
 	}
@@ -166,4 +219,41 @@ func InsertCompletedJob(t *testing.T, database *sql.DB, quoteID, technicianID, m
 		t.Fatalf("complete job: %v", err)
 	}
 	return jobID
+}
+
+func InsertOtherOrganizationFixture(t *testing.T, database *sql.DB) {
+	t.Helper()
+	statements := []string{
+		`INSERT INTO organizations (id, name, slug, created_at) VALUES (2, 'Other Organization', 'other', '2026-05-11 00:00:00.000000') ON DUPLICATE KEY UPDATE name = VALUES(name)`,
+		`INSERT INTO users (id, organization_id, email, password_hash, display_name, role, created_at, updated_at) VALUES
+			(5, 2, 'manager3@other.test', '$2a$10$dbqYuIXKpwIb0heW8bQkoe9JyC2E5Ih/1n.TJkAXT2UjanW5TxVQW', 'Other Org Manager', 'manager', '2026-05-11 00:00:00.000000', '2026-05-11 00:00:00.000000'),
+			(6, 2, 'technician3@other.test', '$2a$10$dbqYuIXKpwIb0heW8bQkoe9JyC2E5Ih/1n.TJkAXT2UjanW5TxVQW', 'Other Org Tech', 'technician', '2026-05-11 00:00:00.000000', '2026-05-11 00:00:00.000000')
+		 ON DUPLICATE KEY UPDATE organization_id = VALUES(organization_id), display_name = VALUES(display_name), role = VALUES(role)`,
+		`INSERT INTO managers (id, user_id, created_at) VALUES (3, 5, '2026-05-11 00:00:00.000000') ON DUPLICATE KEY UPDATE user_id = VALUES(user_id)`,
+		`INSERT INTO technicians (id, user_id, created_at) VALUES (3, 6, '2026-05-11 00:00:00.000000') ON DUPLICATE KEY UPDATE user_id = VALUES(user_id)`,
+		`INSERT INTO technician_availability_rules (organization_id, technician_id, weekday, starts_at, ends_at) VALUES
+			(2, 3, 1, '08:00:00', '18:00:00'),
+			(2, 3, 2, '08:00:00', '18:00:00'),
+			(2, 3, 3, '08:00:00', '18:00:00'),
+			(2, 3, 4, '08:00:00', '18:00:00'),
+			(2, 3, 5, '08:00:00', '18:00:00')
+		 ON DUPLICATE KEY UPDATE starts_at = VALUES(starts_at), ends_at = VALUES(ends_at)`,
+		`INSERT INTO quotes (id, organization_id, customer_name, description, status, created_at, updated_at) VALUES
+			(6, 2, 'Other Org HVAC', 'Repair rooftop unit', 'unscheduled', '2026-05-11 00:05:00.000000', '2026-05-11 00:05:00.000000')
+		 ON DUPLICATE KEY UPDATE customer_name = VALUES(customer_name), description = VALUES(description), updated_at = VALUES(updated_at)`,
+	}
+	for _, statement := range statements {
+		if _, err := database.Exec(statement); err != nil {
+			t.Fatalf("insert other organization fixture: %v", err)
+		}
+	}
+}
+
+func CountRows(t *testing.T, database *sql.DB, query string, args ...any) int {
+	t.Helper()
+	var count int
+	if err := database.QueryRow(query, args...).Scan(&count); err != nil {
+		t.Fatalf("count rows: %v", err)
+	}
+	return count
 }

@@ -66,6 +66,8 @@ func TestAuthHandlers(t *testing.T) {
 	if logout.Code != http.StatusOK || findCookie(logout, "brix_session").MaxAge >= 0 {
 		t.Fatalf("logout status=%d cookies=%#v", logout.Code, logout.Result().Cookies())
 	}
+	meAfterLogout := requestJSON(t, handler, http.MethodGet, "/api/me", ``, []*http.Cookie{findCookie(manager, "brix_session")})
+	assertErrorResponse(t, meAfterLogout, http.StatusUnauthorized, domain.ErrorUnauthorized)
 }
 
 func TestQuoteHandlers(t *testing.T) {
@@ -85,6 +87,16 @@ func TestQuoteHandlers(t *testing.T) {
 	if all.Code != http.StatusOK || !bytes.Contains(all.Body.Bytes(), []byte("Harbor Cafe")) {
 		t.Fatalf("all quotes status=%d body=%s", all.Code, all.Body.String())
 	}
+	create := requestJSON(t, handler, http.MethodPost, "/api/quotes", `{"customerName":"Sydney Bakery","description":"Install replacement oven circuit"}`, []*http.Cookie{managerCookie})
+	if create.Code != http.StatusCreated || !bytes.Contains(create.Body.Bytes(), []byte("Sydney Bakery")) {
+		t.Fatalf("create quote status=%d body=%s", create.Code, create.Body.String())
+	}
+	techCreate := requestJSON(t, handler, http.MethodPost, "/api/quotes", `{"customerName":"Nope","description":"Nope"}`, []*http.Cookie{technicianCookie})
+	assertErrorResponse(t, techCreate, http.StatusForbidden, domain.ErrorForbidden)
+	malformedCreate := requestJSON(t, handler, http.MethodPost, "/api/quotes", `{`, []*http.Cookie{managerCookie})
+	assertErrorResponse(t, malformedCreate, http.StatusBadRequest, domain.ErrorInvalidInput)
+	invalidCreate := requestJSON(t, handler, http.MethodPost, "/api/quotes", `{"customerName":"","description":"Nope"}`, []*http.Cookie{managerCookie})
+	assertErrorResponse(t, invalidCreate, http.StatusBadRequest, domain.ErrorInvalidInput)
 }
 
 func TestTechnicianHandlers(t *testing.T) {
@@ -93,7 +105,10 @@ func TestTechnicianHandlers(t *testing.T) {
 	technicianCookie := loginCookie(t, handler, "technician1@brix.test")
 
 	manager := requestJSON(t, handler, http.MethodGet, "/api/technicians", ``, []*http.Cookie{managerCookie})
-	if manager.Code != http.StatusOK || !bytes.Contains(manager.Body.Bytes(), []byte("Priya Technician")) {
+	if manager.Code != http.StatusOK ||
+		!bytes.Contains(manager.Body.Bytes(), []byte("Priya Technician")) ||
+		!bytes.Contains(manager.Body.Bytes(), []byte(`"availability"`)) ||
+		!bytes.Contains(manager.Body.Bytes(), []byte(`"startsAt":"08:00"`)) {
 		t.Fatalf("technicians status=%d body=%s", manager.Code, manager.Body.String())
 	}
 	technician := requestJSON(t, handler, http.MethodGet, "/api/technicians", ``, []*http.Cookie{technicianCookie})
@@ -106,8 +121,8 @@ func TestJobHandlers(t *testing.T) {
 	manager2Cookie := loginCookie(t, handler, "manager2@brix.test")
 	technicianCookie := loginCookie(t, handler, "technician1@brix.test")
 	technician2Cookie := loginCookie(t, handler, "technician2@brix.test")
-	job1 := testutil.InsertScheduledJob(t, database, 1, 1, 1, "2026-05-12T08:00:00Z")
-	_ = testutil.InsertScheduledJob(t, database, 2, 2, 2, "2026-05-12T08:00:00Z")
+	job1 := testutil.InsertScheduledJob(t, database, 1, 1, 1, "2026-05-12T00:00:00Z")
+	_ = testutil.InsertScheduledJob(t, database, 2, 2, 2, "2026-05-12T00:00:00Z")
 
 	managerJobs := requestJSON(t, handler, http.MethodGet, "/api/jobs", ``, []*http.Cookie{managerCookie})
 	if managerJobs.Code != http.StatusOK || !bytes.Contains(managerJobs.Body.Bytes(), []byte(`"id":`)) || bytes.Contains(managerJobs.Body.Bytes(), []byte("Northside Dental")) {
@@ -117,31 +132,31 @@ func TestJobHandlers(t *testing.T) {
 	if technicianJobs.Code != http.StatusOK || !bytes.Contains(technicianJobs.Body.Bytes(), []byte("Acme Plumbing")) || bytes.Contains(technicianJobs.Body.Bytes(), []byte("Northside Dental")) {
 		t.Fatalf("technician jobs status=%d body=%s", technicianJobs.Code, technicianJobs.Body.String())
 	}
-	create := requestJSON(t, handler, http.MethodPost, "/api/jobs", `{"quoteId":3,"technicianId":1,"startsAt":"2026-05-12T12:00:00Z"}`, []*http.Cookie{managerCookie})
+	create := requestJSON(t, handler, http.MethodPost, "/api/jobs", `{"quoteId":3,"technicianId":1,"startsAt":"2026-05-12T02:00:00Z"}`, []*http.Cookie{managerCookie})
 	if create.Code != http.StatusCreated {
 		t.Fatalf("create status=%d body=%s", create.Code, create.Body.String())
 	}
-	techCreate := requestJSON(t, handler, http.MethodPost, "/api/jobs", `{"quoteId":4,"technicianId":1,"startsAt":"2026-05-12T14:00:00Z"}`, []*http.Cookie{technicianCookie})
+	techCreate := requestJSON(t, handler, http.MethodPost, "/api/jobs", `{"quoteId":4,"technicianId":1,"startsAt":"2026-05-12T04:00:00Z"}`, []*http.Cookie{technicianCookie})
 	assertErrorResponse(t, techCreate, http.StatusForbidden, domain.ErrorForbidden)
 	malformed := requestJSON(t, handler, http.MethodPost, "/api/jobs", `{`, []*http.Cookie{managerCookie})
 	assertErrorResponse(t, malformed, http.StatusBadRequest, domain.ErrorInvalidInput)
 	invalidTime := requestJSON(t, handler, http.MethodPost, "/api/jobs", `{"quoteId":4,"technicianId":1,"startsAt":"not-a-time"}`, []*http.Cookie{managerCookie})
 	assertErrorResponse(t, invalidTime, http.StatusBadRequest, domain.ErrorInvalidInput)
-	overlap := requestJSON(t, handler, http.MethodPost, "/api/jobs", `{"quoteId":4,"technicianId":1,"startsAt":"2026-05-12T09:00:00Z"}`, []*http.Cookie{managerCookie})
+	overlap := requestJSON(t, handler, http.MethodPost, "/api/jobs", `{"quoteId":4,"technicianId":1,"startsAt":"2026-05-12T01:00:00Z"}`, []*http.Cookie{managerCookie})
 	assertErrorResponse(t, overlap, http.StatusConflict, domain.ErrorScheduleConflict)
-	duplicate := requestJSON(t, handler, http.MethodPost, "/api/jobs", `{"quoteId":1,"technicianId":1,"startsAt":"2026-05-12T16:00:00Z"}`, []*http.Cookie{managerCookie})
+	duplicate := requestJSON(t, handler, http.MethodPost, "/api/jobs", `{"quoteId":1,"technicianId":1,"startsAt":"2026-05-12T06:00:00Z"}`, []*http.Cookie{managerCookie})
 	assertErrorResponse(t, duplicate, http.StatusConflict, domain.ErrorQuoteAlreadyScheduled)
-	reschedule := requestJSON(t, handler, http.MethodPatch, "/api/jobs/"+itoa(job1)+"/schedule", `{"technicianId":2,"startsAt":"2026-05-12T14:00:00Z"}`, []*http.Cookie{managerCookie})
+	reschedule := requestJSON(t, handler, http.MethodPatch, "/api/jobs/"+itoa(job1)+"/schedule", `{"technicianId":2,"startsAt":"2026-05-12T04:00:00Z"}`, []*http.Cookie{managerCookie})
 	if reschedule.Code != http.StatusOK {
 		t.Fatalf("reschedule status=%d body=%s", reschedule.Code, reschedule.Body.String())
 	}
-	otherManager := requestJSON(t, handler, http.MethodPatch, "/api/jobs/"+itoa(job1)+"/schedule", `{"technicianId":2,"startsAt":"2026-05-12T16:00:00Z"}`, []*http.Cookie{manager2Cookie})
+	otherManager := requestJSON(t, handler, http.MethodPatch, "/api/jobs/"+itoa(job1)+"/schedule", `{"technicianId":2,"startsAt":"2026-05-12T06:00:00Z"}`, []*http.Cookie{manager2Cookie})
 	assertErrorResponse(t, otherManager, http.StatusForbidden, domain.ErrorForbidden)
 	complete := requestJSON(t, handler, http.MethodPatch, "/api/jobs/"+itoa(job1)+"/complete", `{}`, []*http.Cookie{technician2Cookie})
 	if complete.Code != http.StatusOK {
 		t.Fatalf("complete status=%d body=%s", complete.Code, complete.Body.String())
 	}
-	completedReschedule := requestJSON(t, handler, http.MethodPatch, "/api/jobs/"+itoa(job1)+"/schedule", `{"technicianId":2,"startsAt":"2026-05-12T18:00:00Z"}`, []*http.Cookie{managerCookie})
+	completedReschedule := requestJSON(t, handler, http.MethodPatch, "/api/jobs/"+itoa(job1)+"/schedule", `{"technicianId":2,"startsAt":"2026-05-12T08:00:00Z"}`, []*http.Cookie{managerCookie})
 	assertErrorResponse(t, completedReschedule, http.StatusConflict, domain.ErrorCompletedJobImmutable)
 	wrongTech := requestJSON(t, handler, http.MethodPatch, "/api/jobs/"+itoa(job1)+"/complete", `{}`, []*http.Cookie{technicianCookie})
 	assertErrorResponse(t, wrongTech, http.StatusForbidden, domain.ErrorForbidden)
@@ -160,7 +175,7 @@ func TestNotificationHandlers(t *testing.T) {
 	technicianNotificationID := insertHTTPNotification(t, database, 3, jobID)
 
 	list := requestJSON(t, handler, http.MethodGet, "/api/notifications", ``, []*http.Cookie{managerCookie})
-	if list.Code != http.StatusOK || !bytes.Contains(list.Body.Bytes(), []byte(`"notifications"`)) || bytes.Contains(list.Body.Bytes(), []byte(`"id":`+itoa(technicianNotificationID))) {
+	if list.Code != http.StatusOK || !bytes.Contains(list.Body.Bytes(), []byte(`"notifications"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"unreadCount":1`)) || bytes.Contains(list.Body.Bytes(), []byte(`"id":`+itoa(technicianNotificationID))) {
 		t.Fatalf("notifications status=%d body=%s", list.Code, list.Body.String())
 	}
 	read := requestJSON(t, handler, http.MethodPatch, "/api/notifications/"+itoa(managerNotificationID)+"/read", `{}`, []*http.Cookie{managerCookie})
@@ -180,6 +195,25 @@ func TestHealthHandler(t *testing.T) {
 	response := requestJSON(t, handler, http.MethodGet, "/healthz", ``, nil)
 	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(`"ok":true`)) {
 		t.Fatalf("health status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestObservabilityMiddleware_AddsRequestAndTraceHeaders(t *testing.T) {
+	_, handler := newTestAPI(t)
+	request := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	request.Header.Set("X-Request-Id", "request-123")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if got := recorder.Header().Get("X-Request-Id"); got != "request-123" {
+		t.Fatalf("request id = %q", got)
+	}
+	if got := recorder.Header().Get("Traceparent"); got == "" {
+		t.Fatal("traceparent header missing")
 	}
 }
 
@@ -229,6 +263,22 @@ func TestLogout_RejectsNonJSONContentType(t *testing.T) {
 	assertErrorResponse(t, recorder, http.StatusBadRequest, domain.ErrorInvalidInput)
 }
 
+func TestLogout_ReturnsRevokeError(t *testing.T) {
+	database, handler := newTestAPI(t)
+	login := requestJSON(t, handler, http.MethodPost, "/api/auth/login", `{"email":"manager1@brix.test","password":"password123"}`, nil)
+	cookie := findCookie(login, "brix_session")
+	if cookie == nil {
+		t.Fatalf("login cookie missing: status=%d body=%s", login.Code, login.Body.String())
+	}
+	if err := database.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+
+	response := requestJSON(t, handler, http.MethodPost, "/api/auth/logout", `{}`, []*http.Cookie{cookie})
+
+	assertErrorResponse(t, response, http.StatusInternalServerError, domain.ErrorInternal)
+}
+
 func TestAuthenticatedHandlers_RequireCookie(t *testing.T) {
 	_, handler := newTestAPI(t)
 	tests := []struct {
@@ -237,6 +287,7 @@ func TestAuthenticatedHandlers_RequireCookie(t *testing.T) {
 		body   string
 	}{
 		{http.MethodGet, "/api/quotes", ""},
+		{http.MethodPost, "/api/quotes", `{"customerName":"Sydney Bakery","description":"Install replacement oven circuit"}`},
 		{http.MethodGet, "/api/technicians", ""},
 		{http.MethodGet, "/api/jobs", ""},
 		{http.MethodPost, "/api/jobs", `{"quoteId":1,"technicianId":1,"startsAt":"2026-05-12T10:00:00Z"}`},
@@ -296,7 +347,7 @@ func TestListHandlersWriteServiceErrors(t *testing.T) {
 			path: "/api/quotes",
 			mockDep: func(t *testing.T, deps Dependencies) (Dependencies, func()) {
 				database, mock := newHTTPMockDB(t)
-				mock.ExpectQuery("SELECT id, customer_name").WillReturnError(errors.New("query failed"))
+				mock.ExpectQuery("SELECT id, organization_id").WillReturnError(errors.New("query failed"))
 				deps.Quotes = quotes.NewService(database)
 				return deps, func() { assertHTTPMock(t, mock, database) }
 			},
@@ -326,7 +377,18 @@ func TestListHandlersWriteServiceErrors(t *testing.T) {
 			path: "/api/notifications",
 			mockDep: func(t *testing.T, deps Dependencies) (Dependencies, func()) {
 				database, mock := newHTTPMockDB(t)
-				mock.ExpectQuery("SELECT id, type, message").WillReturnError(errors.New("query failed"))
+				mock.ExpectQuery("SELECT id, organization_id").WillReturnError(errors.New("query failed"))
+				deps.Notifications = notifications.NewService(database, notifications.Options{})
+				return deps, func() { assertHTTPMock(t, mock, database) }
+			},
+		},
+		{
+			name: "notification unread count",
+			path: "/api/notifications",
+			mockDep: func(t *testing.T, deps Dependencies) (Dependencies, func()) {
+				database, mock := newHTTPMockDB(t)
+				mock.ExpectQuery("SELECT id, organization_id").WillReturnRows(sqlmock.NewRows([]string{"id", "organization_id", "type", "message", "job_id", "read_at", "created_at"}))
+				mock.ExpectQuery("SELECT COUNT").WillReturnError(errors.New("count failed"))
 				deps.Notifications = notifications.NewService(database, notifications.Options{})
 				return deps, func() { assertHTTPMock(t, mock, database) }
 			},
@@ -429,8 +491,8 @@ func assertErrorResponse(t *testing.T, response *httptest.ResponseRecorder, stat
 func insertHTTPNotification(t *testing.T, database *sql.DB, recipientUserID int64, jobID int64) int64 {
 	t.Helper()
 	result, err := database.Exec(`
-		INSERT INTO notifications (recipient_user_id, actor_user_id, job_id, type, message, created_at)
-		VALUES (?, 1, ?, 'job_assigned', 'notification', '2026-05-12 10:00:00')
+		INSERT INTO notifications (organization_id, recipient_user_id, actor_user_id, job_id, type, message, created_at)
+		VALUES (1, ?, 1, ?, 'job_assigned', 'notification', '2026-05-12 10:00:00')
 	`, recipientUserID, jobID)
 	if err != nil {
 		t.Fatalf("insert notification: %v", err)

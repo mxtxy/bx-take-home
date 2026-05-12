@@ -74,12 +74,16 @@ func MigrationPath(filename string) string {
 func ResetTestDatabase(ctx context.Context, database *sql.DB) error {
 	statements := []string{
 		"SET FOREIGN_KEY_CHECKS = 0",
+		"TRUNCATE TABLE schedule_audit_logs",
 		"TRUNCATE TABLE notifications",
+		"TRUNCATE TABLE sessions",
 		"TRUNCATE TABLE jobs",
 		"TRUNCATE TABLE quotes",
+		"TRUNCATE TABLE technician_availability_rules",
 		"TRUNCATE TABLE technicians",
 		"TRUNCATE TABLE managers",
 		"TRUNCATE TABLE users",
+		"TRUNCATE TABLE organizations",
 		"SET FOREIGN_KEY_CHECKS = 1",
 	}
 	for _, statement := range statements {

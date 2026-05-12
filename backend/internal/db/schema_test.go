@@ -30,12 +30,33 @@ func openMigratedDB(t *testing.T) *sql.DB {
 	t.Cleanup(func() { _ = database.Close() })
 	acquireTestLock(t, database)
 
+	dropSchema(t, database)
 	migrationsDir := filepath.Join("..", "..", "migrations")
 	if err := ApplySQLFile(ctx, database, filepath.Join(migrationsDir, "001_init.sql")); err != nil {
 		t.Fatalf("apply init migration: %v", err)
 	}
 	resetAndSeed(t, database)
 	return database
+}
+
+func dropSchema(t *testing.T, database *sql.DB) {
+	t.Helper()
+	if _, err := database.Exec(`
+		SET FOREIGN_KEY_CHECKS = 0;
+		DROP TABLE IF EXISTS schedule_audit_logs;
+		DROP TABLE IF EXISTS notifications;
+		DROP TABLE IF EXISTS sessions;
+		DROP TABLE IF EXISTS jobs;
+		DROP TABLE IF EXISTS quotes;
+		DROP TABLE IF EXISTS technician_availability_rules;
+		DROP TABLE IF EXISTS technicians;
+		DROP TABLE IF EXISTS managers;
+		DROP TABLE IF EXISTS users;
+		DROP TABLE IF EXISTS organizations;
+		SET FOREIGN_KEY_CHECKS = 1;
+	`); err != nil {
+		t.Fatalf("drop schema: %v", err)
+	}
 }
 
 func acquireTestLock(t *testing.T, database *sql.DB) {
@@ -91,16 +112,38 @@ func TestSchema_RequiredTablesExist(t *testing.T) {
 		}
 		found[name] = true
 	}
-	for _, tableName := range []string{"users", "managers", "technicians", "quotes", "jobs", "notifications"} {
+	for _, tableName := range []string{"organizations", "users", "managers", "technicians", "technician_availability_rules", "quotes", "jobs", "notifications", "schedule_audit_logs", "sessions"} {
 		if !found[tableName] {
 			t.Fatalf("expected table %s to exist; found %#v", tableName, found)
 		}
 	}
 }
 
+func TestSchema_TenantColumnsExist(t *testing.T) {
+	database := openMigratedDB(t)
+	tables := []string{"users", "quotes", "jobs", "notifications", "schedule_audit_logs", "sessions", "technician_availability_rules"}
+	for _, tableName := range tables {
+		t.Run(tableName, func(t *testing.T) {
+			var count int
+			if err := database.QueryRow(`
+				SELECT COUNT(*)
+				FROM information_schema.columns
+				WHERE table_schema = DATABASE()
+				  AND table_name = ?
+				  AND column_name = 'organization_id'
+			`, tableName).Scan(&count); err != nil {
+				t.Fatalf("query columns: %v", err)
+			}
+			if count != 1 {
+				t.Fatalf("%s.organization_id column missing", tableName)
+			}
+		})
+	}
+}
+
 func TestSchema_UsersEmailUnique(t *testing.T) {
 	database := openMigratedDB(t)
-	insert := `INSERT INTO users (email, password_hash, display_name, role) VALUES (?, 'hash', 'Duplicate', 'manager')`
+	insert := `INSERT INTO users (organization_id, email, password_hash, display_name, role) VALUES (1, ?, 'hash', 'Duplicate', 'manager')`
 	if _, err := database.Exec(insert, "duplicate@brix.test"); err != nil {
 		t.Fatalf("first insert: %v", err)
 	}
@@ -130,19 +173,41 @@ func TestSchema_JobsQuoteUnique(t *testing.T) {
 	database := openMigratedDB(t)
 	insertJob(t, database, 1, 1, 1, "2026-05-12 10:00:00", "2026-05-12 12:00:00")
 	_, err := database.Exec(`
-		INSERT INTO jobs (quote_id, technician_id, manager_id, starts_at, ends_at, status)
-		VALUES (1, 2, 1, '2026-05-12 14:00:00', '2026-05-12 16:00:00', 'scheduled')
+		INSERT INTO jobs (organization_id, quote_id, technician_id, manager_id, starts_at, ends_at, status)
+		VALUES (1, 1, 2, 1, '2026-05-12 14:00:00', '2026-05-12 16:00:00', 'scheduled')
 	`)
 	if !IsDuplicateKey(err) {
 		t.Fatalf("expected duplicate key error, got %v", err)
 	}
 }
 
+func TestSchema_TechnicianAvailabilityReferencesTechnician(t *testing.T) {
+	database := openMigratedDB(t)
+	_, err := database.Exec(`
+		INSERT INTO technician_availability_rules (organization_id, technician_id, weekday, starts_at, ends_at)
+		VALUES (1, 999, 2, '08:00:00', '18:00:00')
+	`)
+	if !IsForeignKey(err) {
+		t.Fatalf("expected foreign key error, got %v", err)
+	}
+}
+
+func TestSchema_TechnicianAvailabilityRequiresPositiveWindow(t *testing.T) {
+	database := openMigratedDB(t)
+	_, err := database.Exec(`
+		INSERT INTO technician_availability_rules (organization_id, technician_id, weekday, starts_at, ends_at)
+		VALUES (1, 1, 2, '18:00:00', '08:00:00')
+	`)
+	if !IsCheckConstraint(err) {
+		t.Fatalf("expected check constraint error, got %v", err)
+	}
+}
+
 func TestSchema_JobMustReferenceExistingQuote(t *testing.T) {
 	database := openMigratedDB(t)
 	_, err := database.Exec(`
-		INSERT INTO jobs (quote_id, technician_id, manager_id, starts_at, ends_at, status)
-		VALUES (999, 1, 1, '2026-05-12 10:00:00', '2026-05-12 12:00:00', 'scheduled')
+		INSERT INTO jobs (organization_id, quote_id, technician_id, manager_id, starts_at, ends_at, status)
+		VALUES (1, 999, 1, 1, '2026-05-12 10:00:00', '2026-05-12 12:00:00', 'scheduled')
 	`)
 	if !IsForeignKey(err) {
 		t.Fatalf("expected foreign key error, got %v", err)
@@ -152,8 +217,8 @@ func TestSchema_JobMustReferenceExistingQuote(t *testing.T) {
 func TestSchema_JobMustReferenceExistingTechnician(t *testing.T) {
 	database := openMigratedDB(t)
 	_, err := database.Exec(`
-		INSERT INTO jobs (quote_id, technician_id, manager_id, starts_at, ends_at, status)
-		VALUES (1, 999, 1, '2026-05-12 10:00:00', '2026-05-12 12:00:00', 'scheduled')
+		INSERT INTO jobs (organization_id, quote_id, technician_id, manager_id, starts_at, ends_at, status)
+		VALUES (1, 1, 999, 1, '2026-05-12 10:00:00', '2026-05-12 12:00:00', 'scheduled')
 	`)
 	if !IsForeignKey(err) {
 		t.Fatalf("expected foreign key error, got %v", err)
@@ -163,8 +228,8 @@ func TestSchema_JobMustReferenceExistingTechnician(t *testing.T) {
 func TestSchema_JobMustReferenceExistingManager(t *testing.T) {
 	database := openMigratedDB(t)
 	_, err := database.Exec(`
-		INSERT INTO jobs (quote_id, technician_id, manager_id, starts_at, ends_at, status)
-		VALUES (1, 1, 999, '2026-05-12 10:00:00', '2026-05-12 12:00:00', 'scheduled')
+		INSERT INTO jobs (organization_id, quote_id, technician_id, manager_id, starts_at, ends_at, status)
+		VALUES (1, 1, 1, 999, '2026-05-12 10:00:00', '2026-05-12 12:00:00', 'scheduled')
 	`)
 	if !IsForeignKey(err) {
 		t.Fatalf("expected foreign key error, got %v", err)
@@ -174,8 +239,8 @@ func TestSchema_JobMustReferenceExistingManager(t *testing.T) {
 func TestSchema_JobWindowMustBePositive(t *testing.T) {
 	database := openMigratedDB(t)
 	_, err := database.Exec(`
-		INSERT INTO jobs (quote_id, technician_id, manager_id, starts_at, ends_at, status)
-		VALUES (1, 1, 1, '2026-05-12 12:00:00', '2026-05-12 10:00:00', 'scheduled')
+		INSERT INTO jobs (organization_id, quote_id, technician_id, manager_id, starts_at, ends_at, status)
+		VALUES (1, 1, 1, 1, '2026-05-12 12:00:00', '2026-05-12 10:00:00', 'scheduled')
 	`)
 	if !IsCheckConstraint(err) {
 		t.Fatalf("expected check constraint error, got %v", err)
@@ -185,8 +250,8 @@ func TestSchema_JobWindowMustBePositive(t *testing.T) {
 func TestSchema_JobWindowMustBeTwoHours(t *testing.T) {
 	database := openMigratedDB(t)
 	_, err := database.Exec(`
-		INSERT INTO jobs (quote_id, technician_id, manager_id, starts_at, ends_at, status)
-		VALUES (1, 1, 1, '2026-05-12 10:00:00', '2026-05-12 11:00:00', 'scheduled')
+		INSERT INTO jobs (organization_id, quote_id, technician_id, manager_id, starts_at, ends_at, status)
+		VALUES (1, 1, 1, 1, '2026-05-12 10:00:00', '2026-05-12 11:00:00', 'scheduled')
 	`)
 	if !IsCheckConstraint(err) {
 		t.Fatalf("expected check constraint error, got %v", err)
@@ -195,7 +260,7 @@ func TestSchema_JobWindowMustBeTwoHours(t *testing.T) {
 
 func TestSeed_SeededUsersExist(t *testing.T) {
 	database := openMigratedDB(t)
-	rows, err := database.Query(`SELECT email, password_hash FROM users ORDER BY id`)
+	rows, err := database.Query(`SELECT organization_id, email, password_hash FROM users ORDER BY id`)
 	if err != nil {
 		t.Fatalf("query users: %v", err)
 	}
@@ -203,9 +268,13 @@ func TestSeed_SeededUsersExist(t *testing.T) {
 
 	got := map[string]string{}
 	for rows.Next() {
+		var organizationID int64
 		var email, hash string
-		if err := rows.Scan(&email, &hash); err != nil {
+		if err := rows.Scan(&organizationID, &email, &hash); err != nil {
 			t.Fatalf("scan user: %v", err)
+		}
+		if organizationID != 1 {
+			t.Fatalf("seed user %s organization_id = %d, want 1", email, organizationID)
 		}
 		got[email] = hash
 	}
@@ -213,6 +282,20 @@ func TestSeed_SeededUsersExist(t *testing.T) {
 		if got[email] == "" {
 			t.Fatalf("expected seeded user %s with non-empty hash, got %#v", email, got)
 		}
+	}
+}
+
+func TestSeed_SeededOrganizationAndAvailabilityExist(t *testing.T) {
+	database := openMigratedDB(t)
+	if got := countRows(t, database, `SELECT COUNT(*) FROM organizations WHERE id = 1 AND slug = 'brix'`); got != 1 {
+		t.Fatalf("seeded organization count = %d", got)
+	}
+	if got := countRows(t, database, `
+		SELECT COUNT(*)
+		FROM technician_availability_rules
+		WHERE organization_id = 1 AND starts_at = '08:00:00' AND ends_at = '18:00:00'
+	`); got != 10 {
+		t.Fatalf("seeded availability count = %d", got)
 	}
 }
 
@@ -268,12 +351,21 @@ func TestSeed_PreservesExistingQuoteStatusWhenReapplied(t *testing.T) {
 func insertJob(t *testing.T, database *sql.DB, quoteID, technicianID, managerID int64, startsAt, endsAt string) {
 	t.Helper()
 	_, err := database.Exec(`
-		INSERT INTO jobs (quote_id, technician_id, manager_id, starts_at, ends_at, status)
-		VALUES (?, ?, ?, ?, ?, 'scheduled')
+		INSERT INTO jobs (organization_id, quote_id, technician_id, manager_id, starts_at, ends_at, status)
+		VALUES (1, ?, ?, ?, ?, ?, 'scheduled')
 	`, quoteID, technicianID, managerID, startsAt, endsAt)
 	if err != nil {
 		t.Fatalf("insert job: %v", err)
 	}
+}
+
+func countRows(t *testing.T, database *sql.DB, query string, args ...any) int {
+	t.Helper()
+	var count int
+	if err := database.QueryRow(query, args...).Scan(&count); err != nil {
+		t.Fatalf("count rows: %v", err)
+	}
+	return count
 }
 
 func TestTimeConstantParses(t *testing.T) {

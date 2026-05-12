@@ -26,11 +26,11 @@ func NewService(database *sql.DB, options Options) *Service {
 
 func (s *Service) ListNotifications(ctx context.Context, actor domain.Actor) ([]domain.NotificationDTO, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, type, message, job_id, read_at, created_at
+		SELECT id, organization_id, type, message, job_id, read_at, created_at
 		FROM notifications
-		WHERE recipient_user_id = ?
+		WHERE recipient_user_id = ? AND organization_id = ?
 		ORDER BY created_at DESC, id DESC
-	`, actor.UserID)
+	`, actor.UserID, actor.OrganizationID)
 	if err != nil {
 		return nil, err
 	}
@@ -47,6 +47,18 @@ func (s *Service) ListNotifications(ctx context.Context, actor domain.Actor) ([]
 	return result, rows.Err()
 }
 
+func (s *Service) UnreadCount(ctx context.Context, actor domain.Actor) (int, error) {
+	var count int
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM notifications
+		WHERE recipient_user_id = ? AND organization_id = ? AND read_at IS NULL
+	`, actor.UserID, actor.OrganizationID).Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
 func (s *Service) MarkRead(ctx context.Context, actor domain.Actor, notificationID int64) (domain.NotificationDTO, error) {
 	if notificationID <= 0 {
 		return domain.NotificationDTO{}, domain.Errorf(domain.ErrorInvalidInput)
@@ -58,17 +70,19 @@ func (s *Service) MarkRead(ctx context.Context, actor domain.Actor, notification
 	defer tx.Rollback()
 
 	var recipientUserID int64
+	var organizationID int64
 	var notification domain.NotificationDTO
 	var typeValue string
 	var jobID sql.NullInt64
 	var readAt sql.NullTime
 	err = tx.QueryRowContext(ctx, `
-		SELECT id, recipient_user_id, type, message, job_id, read_at, created_at
+		SELECT id, organization_id, recipient_user_id, type, message, job_id, read_at, created_at
 		FROM notifications
 		WHERE id = ?
 		FOR UPDATE
 	`, notificationID).Scan(
 		&notification.ID,
+		&organizationID,
 		&recipientUserID,
 		&typeValue,
 		&notification.Message,
@@ -82,9 +96,10 @@ func (s *Service) MarkRead(ctx context.Context, actor domain.Actor, notification
 	if err != nil {
 		return domain.NotificationDTO{}, err
 	}
-	if recipientUserID != actor.UserID {
+	if recipientUserID != actor.UserID || organizationID != actor.OrganizationID {
 		return domain.NotificationDTO{}, domain.Errorf(domain.ErrorForbidden)
 	}
+	notification.OrganizationID = organizationID
 	notification.Type = domain.NotificationType(typeValue)
 	if jobID.Valid {
 		value := jobID.Int64
@@ -115,7 +130,7 @@ func scanNotification(scanner notificationScanner) (domain.NotificationDTO, erro
 	var typeValue string
 	var jobID sql.NullInt64
 	var readAt sql.NullTime
-	if err := scanner.Scan(&notification.ID, &typeValue, &notification.Message, &jobID, &readAt, &notification.CreatedAt); err != nil {
+	if err := scanner.Scan(&notification.ID, &notification.OrganizationID, &typeValue, &notification.Message, &jobID, &readAt, &notification.CreatedAt); err != nil {
 		return domain.NotificationDTO{}, err
 	}
 	notification.Type = domain.NotificationType(typeValue)

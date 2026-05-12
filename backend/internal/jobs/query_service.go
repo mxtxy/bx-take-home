@@ -20,16 +20,16 @@ func (s *QueryService) ListJobs(ctx context.Context, actor domain.Actor) ([]doma
 	var arg int64
 	switch actor.Role {
 	case domain.RoleManager:
-		if actor.ManagerID == nil {
+		if actor.ManagerID == nil || actor.OrganizationID <= 0 {
 			return nil, domain.Errorf(domain.ErrorUnauthorized)
 		}
-		where = `j.manager_id = ?`
+		where = `j.organization_id = ? AND j.manager_id = ?`
 		arg = *actor.ManagerID
 	case domain.RoleTechnician:
-		if actor.TechnicianID == nil {
+		if actor.TechnicianID == nil || actor.OrganizationID <= 0 {
 			return nil, domain.Errorf(domain.ErrorUnauthorized)
 		}
-		where = `j.technician_id = ?`
+		where = `j.organization_id = ? AND j.technician_id = ?`
 		arg = *actor.TechnicianID
 	default:
 		return nil, domain.Errorf(domain.ErrorUnauthorized)
@@ -37,7 +37,7 @@ func (s *QueryService) ListJobs(ctx context.Context, actor domain.Actor) ([]doma
 
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
-			j.id, j.quote_id, q.customer_name, q.description,
+			j.id, j.organization_id, j.quote_id, q.customer_name, q.description,
 			j.technician_id, tech_user.display_name,
 			j.manager_id, manager_user.display_name,
 			j.starts_at, j.ends_at, j.status, j.completed_at,
@@ -50,7 +50,7 @@ func (s *QueryService) ListJobs(ctx context.Context, actor domain.Actor) ([]doma
 		JOIN users manager_user ON manager_user.id = manager.user_id
 		WHERE `+where+`
 		ORDER BY j.starts_at ASC, j.id ASC
-	`, arg)
+	`, actor.OrganizationID, arg)
 	if err != nil {
 		return nil, err
 	}
@@ -63,6 +63,7 @@ func (s *QueryService) ListJobs(ctx context.Context, actor domain.Actor) ([]doma
 		var completedAt sql.NullTime
 		if err := rows.Scan(
 			&job.ID,
+			&job.OrganizationID,
 			&job.QuoteID,
 			&job.QuoteCustomerName,
 			&job.QuoteDescription,

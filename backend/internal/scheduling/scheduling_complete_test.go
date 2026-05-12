@@ -58,6 +58,18 @@ func TestSchedulingService_CompleteJob_WrongTechnicianForbidden(t *testing.T) {
 	}
 }
 
+func TestSchedulingService_CompleteJob_RejectsCrossOrganizationActor(t *testing.T) {
+	service, database := newTestSchedulingService(t)
+	testutil.InsertOtherOrganizationFixture(t, database)
+	jobID := testutil.InsertScheduledJob(t, database, 1, 1, 1, "2026-05-12T10:00:00Z")
+
+	_, _, err := service.CompleteJob(context.Background(), testutil.Technician3(), domain.CompleteJobInput{JobID: jobID})
+	assertCode(t, err, domain.ErrorNotFound)
+	if got := scalarString(t, database, `SELECT status FROM jobs WHERE id = ?`, jobID); got != "scheduled" {
+		t.Fatalf("status = %s", got)
+	}
+}
+
 func TestSchedulingService_CompleteJob_InvalidInput(t *testing.T) {
 	service, _ := newTestSchedulingService(t)
 	_, _, err := service.CompleteJob(context.Background(), testutil.Technician1(), domain.CompleteJobInput{JobID: 0})
@@ -81,5 +93,29 @@ func TestSchedulingService_CompleteJob_AlreadyCompletedConflict(t *testing.T) {
 	}
 	if got := countRows(t, database, `SELECT COUNT(*) FROM notifications`); got != 0 {
 		t.Fatalf("notification count = %d", got)
+	}
+}
+
+func TestSchedulingService_CompleteJob_WritesAuditLog(t *testing.T) {
+	service, database := newTestSchedulingService(t)
+	jobID := testutil.InsertScheduledJob(t, database, 1, 1, 1, "2026-05-12T10:00:00Z")
+	clockTime := testutil.MustTime(t, "2026-05-12T16:00:00Z")
+	service.clock = func() time.Time { return clockTime }
+
+	_, _, err := service.CompleteJob(context.Background(), testutil.Technician1(), domain.CompleteJobInput{JobID: jobID})
+	if err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	var action, completedAt string
+	if err := database.QueryRow(`
+		SELECT action, DATE_FORMAT(new_completed_at, '%Y-%m-%d %H:%i:%s')
+		FROM schedule_audit_logs
+		WHERE job_id = ? AND action = 'job_completed'
+	`, jobID).Scan(&action, &completedAt); err != nil {
+		t.Fatalf("query audit log: %v", err)
+	}
+	if action != "job_completed" || completedAt != "2026-05-12 16:00:00" {
+		t.Fatalf("audit row action=%s completedAt=%s", action, completedAt)
 	}
 }

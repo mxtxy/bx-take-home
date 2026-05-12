@@ -18,7 +18,7 @@ func newTestSchedulingService(t *testing.T) (*Service, *sql.DB) {
 
 func TestSchedulingService_AssignJob_Success(t *testing.T) {
 	service, database := newTestSchedulingService(t)
-	input := domain.AssignJobInput{QuoteID: 1, TechnicianID: 1, StartsAt: testutil.MustTime(t, "2026-05-12T10:00:00Z")}
+	input := domain.AssignJobInput{QuoteID: 1, TechnicianID: 1, StartsAt: testutil.MustTime(t, "2026-05-12T00:00:00Z")}
 
 	job, events, err := service.AssignJob(context.Background(), testutil.Manager1(), input)
 	if err != nil {
@@ -27,7 +27,7 @@ func TestSchedulingService_AssignJob_Success(t *testing.T) {
 	if job.QuoteID != 1 || job.TechnicianID != 1 || job.ManagerID != 1 || job.Status != domain.JobScheduled || job.CompletedAt != nil {
 		t.Fatalf("job = %#v", job)
 	}
-	if !job.StartsAt.Equal(input.StartsAt) || !job.EndsAt.Equal(testutil.MustTime(t, "2026-05-12T12:00:00Z")) {
+	if !job.StartsAt.Equal(input.StartsAt) || !job.EndsAt.Equal(testutil.MustTime(t, "2026-05-12T02:00:00Z")) {
 		t.Fatalf("window = %s-%s", job.StartsAt, job.EndsAt)
 	}
 	if countRows(t, database, `SELECT COUNT(*) FROM jobs`) != 1 {
@@ -47,7 +47,7 @@ func TestSchedulingService_AssignJob_Success(t *testing.T) {
 
 func TestSchedulingService_AssignJob_TechnicianActorForbidden(t *testing.T) {
 	service, database := newTestSchedulingService(t)
-	input := domain.AssignJobInput{QuoteID: 1, TechnicianID: 1, StartsAt: testutil.MustTime(t, "2026-05-12T10:00:00Z")}
+	input := domain.AssignJobInput{QuoteID: 1, TechnicianID: 1, StartsAt: testutil.MustTime(t, "2026-05-12T00:00:00Z")}
 
 	_, events, err := service.AssignJob(context.Background(), testutil.Technician1(), input)
 	assertCode(t, err, domain.ErrorForbidden)
@@ -61,7 +61,7 @@ func TestSchedulingService_AssignJob_MalformedManagerActorForbidden(t *testing.T
 	service, database := newTestSchedulingService(t)
 	actor := testutil.Manager1()
 	actor.ManagerID = nil
-	input := domain.AssignJobInput{QuoteID: 1, TechnicianID: 1, StartsAt: testutil.MustTime(t, "2026-05-12T10:00:00Z")}
+	input := domain.AssignJobInput{QuoteID: 1, TechnicianID: 1, StartsAt: testutil.MustTime(t, "2026-05-12T00:00:00Z")}
 
 	_, _, err := service.AssignJob(context.Background(), actor, input)
 	assertCode(t, err, domain.ErrorForbidden)
@@ -70,9 +70,9 @@ func TestSchedulingService_AssignJob_MalformedManagerActorForbidden(t *testing.T
 
 func TestSchedulingService_AssignJob_InvalidInput(t *testing.T) {
 	tests := []domain.AssignJobInput{
-		{QuoteID: 0, TechnicianID: 1, StartsAt: testutil.MustTime(t, "2026-05-12T10:00:00Z")},
-		{QuoteID: 1, TechnicianID: 0, StartsAt: testutil.MustTime(t, "2026-05-12T10:00:00Z")},
-		{QuoteID: 1, TechnicianID: 1, StartsAt: testutil.MustTime(t, "2026-05-12T10:00:01Z")},
+		{QuoteID: 0, TechnicianID: 1, StartsAt: testutil.MustTime(t, "2026-05-12T00:00:00Z")},
+		{QuoteID: 1, TechnicianID: 0, StartsAt: testutil.MustTime(t, "2026-05-12T00:00:00Z")},
+		{QuoteID: 1, TechnicianID: 1, StartsAt: testutil.MustTime(t, "2026-05-12T00:00:01Z")},
 	}
 	for _, input := range tests {
 		t.Run("", func(t *testing.T) {
@@ -86,7 +86,7 @@ func TestSchedulingService_AssignJob_InvalidInput(t *testing.T) {
 
 func TestSchedulingService_AssignJob_MissingQuote(t *testing.T) {
 	service, _ := newTestSchedulingService(t)
-	input := domain.AssignJobInput{QuoteID: 999, TechnicianID: 1, StartsAt: testutil.MustTime(t, "2026-05-12T10:00:00Z")}
+	input := domain.AssignJobInput{QuoteID: 999, TechnicianID: 1, StartsAt: testutil.MustTime(t, "2026-05-12T00:00:00Z")}
 
 	_, _, err := service.AssignJob(context.Background(), testutil.Manager1(), input)
 	assertCode(t, err, domain.ErrorNotFound)
@@ -94,7 +94,7 @@ func TestSchedulingService_AssignJob_MissingQuote(t *testing.T) {
 
 func TestSchedulingService_AssignJob_MissingTechnician(t *testing.T) {
 	service, _ := newTestSchedulingService(t)
-	input := domain.AssignJobInput{QuoteID: 1, TechnicianID: 999, StartsAt: testutil.MustTime(t, "2026-05-12T10:00:00Z")}
+	input := domain.AssignJobInput{QuoteID: 1, TechnicianID: 999, StartsAt: testutil.MustTime(t, "2026-05-12T00:00:00Z")}
 
 	_, _, err := service.AssignJob(context.Background(), testutil.Manager1(), input)
 	assertCode(t, err, domain.ErrorNotFound)
@@ -102,7 +102,7 @@ func TestSchedulingService_AssignJob_MissingTechnician(t *testing.T) {
 
 func TestSchedulingService_AssignJob_QuoteAlreadyScheduled(t *testing.T) {
 	service, database := newTestSchedulingService(t)
-	input := domain.AssignJobInput{QuoteID: 1, TechnicianID: 1, StartsAt: testutil.MustTime(t, "2026-05-12T10:00:00Z")}
+	input := domain.AssignJobInput{QuoteID: 1, TechnicianID: 1, StartsAt: testutil.MustTime(t, "2026-05-12T00:00:00Z")}
 	if _, _, err := service.AssignJob(context.Background(), testutil.Manager1(), input); err != nil {
 		t.Fatalf("first assign: %v", err)
 	}
@@ -116,8 +116,8 @@ func TestSchedulingService_AssignJob_QuoteAlreadyScheduled(t *testing.T) {
 
 func TestSchedulingService_AssignJob_OverlapConflict(t *testing.T) {
 	service, database := newTestSchedulingService(t)
-	testutil.InsertScheduledJob(t, database, 1, 1, 1, "2026-05-12T10:00:00Z")
-	input := domain.AssignJobInput{QuoteID: 2, TechnicianID: 1, StartsAt: testutil.MustTime(t, "2026-05-12T11:00:00Z")}
+	testutil.InsertScheduledJob(t, database, 1, 1, 1, "2026-05-12T00:00:00Z")
+	input := domain.AssignJobInput{QuoteID: 2, TechnicianID: 1, StartsAt: testutil.MustTime(t, "2026-05-12T01:00:00Z")}
 
 	_, events, err := service.AssignJob(context.Background(), testutil.Manager1(), input)
 	assertCode(t, err, domain.ErrorScheduleConflict)
@@ -137,8 +137,8 @@ func TestSchedulingService_AssignJob_OverlapConflict(t *testing.T) {
 
 func TestSchedulingService_AssignJob_ExactOverlapConflict(t *testing.T) {
 	service, database := newTestSchedulingService(t)
-	testutil.InsertScheduledJob(t, database, 1, 1, 1, "2026-05-12T10:00:00Z")
-	input := domain.AssignJobInput{QuoteID: 2, TechnicianID: 1, StartsAt: testutil.MustTime(t, "2026-05-12T10:00:00Z")}
+	testutil.InsertScheduledJob(t, database, 1, 1, 1, "2026-05-12T00:00:00Z")
+	input := domain.AssignJobInput{QuoteID: 2, TechnicianID: 1, StartsAt: testutil.MustTime(t, "2026-05-12T00:00:00Z")}
 
 	_, _, err := service.AssignJob(context.Background(), testutil.Manager1(), input)
 	assertCode(t, err, domain.ErrorScheduleConflict)
@@ -146,8 +146,8 @@ func TestSchedulingService_AssignJob_ExactOverlapConflict(t *testing.T) {
 
 func TestSchedulingService_AssignJob_BoundaryBeforeAllowed(t *testing.T) {
 	service, database := newTestSchedulingService(t)
-	testutil.InsertScheduledJob(t, database, 1, 1, 1, "2026-05-12T10:00:00Z")
-	input := domain.AssignJobInput{QuoteID: 2, TechnicianID: 1, StartsAt: testutil.MustTime(t, "2026-05-12T08:00:00Z")}
+	testutil.InsertScheduledJob(t, database, 1, 1, 1, "2026-05-12T00:00:00Z")
+	input := domain.AssignJobInput{QuoteID: 2, TechnicianID: 1, StartsAt: testutil.MustTime(t, "2026-05-11T22:00:00Z")}
 
 	_, _, err := service.AssignJob(context.Background(), testutil.Manager1(), input)
 	if err != nil {
@@ -155,10 +155,23 @@ func TestSchedulingService_AssignJob_BoundaryBeforeAllowed(t *testing.T) {
 	}
 }
 
+func TestSchedulingService_AssignJob_AllowsSydneyLocalBusinessHours(t *testing.T) {
+	service, _ := newTestSchedulingService(t)
+	input := domain.AssignJobInput{QuoteID: 1, TechnicianID: 1, StartsAt: testutil.MustTime(t, "2026-05-11T22:00:00Z")}
+
+	job, _, err := service.AssignJob(context.Background(), testutil.Manager1(), input)
+	if err != nil {
+		t.Fatalf("assign Sydney-local 08:00 window: %v", err)
+	}
+	if !job.StartsAt.Equal(input.StartsAt) || !job.EndsAt.Equal(testutil.MustTime(t, "2026-05-12T00:00:00Z")) {
+		t.Fatalf("window = %s-%s", job.StartsAt, job.EndsAt)
+	}
+}
+
 func TestSchedulingService_AssignJob_BoundaryAfterAllowed(t *testing.T) {
 	service, database := newTestSchedulingService(t)
-	testutil.InsertScheduledJob(t, database, 1, 1, 1, "2026-05-12T10:00:00Z")
-	input := domain.AssignJobInput{QuoteID: 2, TechnicianID: 1, StartsAt: testutil.MustTime(t, "2026-05-12T12:00:00Z")}
+	testutil.InsertScheduledJob(t, database, 1, 1, 1, "2026-05-12T00:00:00Z")
+	input := domain.AssignJobInput{QuoteID: 2, TechnicianID: 1, StartsAt: testutil.MustTime(t, "2026-05-12T02:00:00Z")}
 
 	_, _, err := service.AssignJob(context.Background(), testutil.Manager1(), input)
 	if err != nil {
@@ -168,12 +181,78 @@ func TestSchedulingService_AssignJob_BoundaryAfterAllowed(t *testing.T) {
 
 func TestSchedulingService_AssignJob_DifferentTechnicianSameWindowAllowed(t *testing.T) {
 	service, database := newTestSchedulingService(t)
-	testutil.InsertScheduledJob(t, database, 1, 1, 1, "2026-05-12T10:00:00Z")
-	input := domain.AssignJobInput{QuoteID: 2, TechnicianID: 2, StartsAt: testutil.MustTime(t, "2026-05-12T10:00:00Z")}
+	testutil.InsertScheduledJob(t, database, 1, 1, 1, "2026-05-12T00:00:00Z")
+	input := domain.AssignJobInput{QuoteID: 2, TechnicianID: 2, StartsAt: testutil.MustTime(t, "2026-05-12T00:00:00Z")}
 
 	_, _, err := service.AssignJob(context.Background(), testutil.Manager1(), input)
 	if err != nil {
 		t.Fatalf("assign: %v", err)
+	}
+}
+
+func TestSchedulingService_AssignJob_RejectsCrossOrganizationQuote(t *testing.T) {
+	service, database := newTestSchedulingService(t)
+	testutil.InsertOtherOrganizationFixture(t, database)
+	input := domain.AssignJobInput{QuoteID: 6, TechnicianID: 1, StartsAt: testutil.MustTime(t, "2026-05-12T00:00:00Z")}
+
+	_, events, err := service.AssignJob(context.Background(), testutil.Manager1(), input)
+	assertCode(t, err, domain.ErrorNotFound)
+	if got := countRows(t, database, `SELECT COUNT(*) FROM jobs WHERE quote_id = 6`); got != 0 {
+		t.Fatalf("cross-org jobs = %d", got)
+	}
+	if len(events) != 0 {
+		t.Fatalf("events = %#v", events)
+	}
+}
+
+func TestSchedulingService_AssignJob_RejectsCrossOrganizationTechnician(t *testing.T) {
+	service, database := newTestSchedulingService(t)
+	testutil.InsertOtherOrganizationFixture(t, database)
+	input := domain.AssignJobInput{QuoteID: 1, TechnicianID: 3, StartsAt: testutil.MustTime(t, "2026-05-12T00:00:00Z")}
+
+	_, events, err := service.AssignJob(context.Background(), testutil.Manager1(), input)
+	assertCode(t, err, domain.ErrorNotFound)
+	assertNoMutation(t, database)
+	if len(events) != 0 {
+		t.Fatalf("events = %#v", events)
+	}
+}
+
+func TestSchedulingService_AssignJob_RejectsUnavailableWindow(t *testing.T) {
+	service, database := newTestSchedulingService(t)
+	input := domain.AssignJobInput{QuoteID: 1, TechnicianID: 1, StartsAt: testutil.MustTime(t, "2026-05-12T08:00:00Z")}
+
+	_, events, err := service.AssignJob(context.Background(), testutil.Manager1(), input)
+	assertCode(t, err, domain.ErrorTechnicianUnavailable)
+	assertNoMutation(t, database)
+	if len(events) != 0 {
+		t.Fatalf("events = %#v", events)
+	}
+}
+
+func TestSchedulingService_AssignJob_WritesAuditLog(t *testing.T) {
+	service, database := newTestSchedulingService(t)
+
+	job, _, err := service.AssignJob(context.Background(), testutil.Manager1(), domain.AssignJobInput{
+		QuoteID:      1,
+		TechnicianID: 1,
+		StartsAt:     testutil.MustTime(t, "2026-05-12T00:00:00Z"),
+	})
+	if err != nil {
+		t.Fatalf("assign: %v", err)
+	}
+
+	var action string
+	var organizationID, actorUserID, jobID, quoteID, newTechnicianID int64
+	if err := database.QueryRow(`
+		SELECT organization_id, actor_user_id, action, job_id, quote_id, new_technician_id
+		FROM schedule_audit_logs
+		WHERE job_id = ?
+	`, job.ID).Scan(&organizationID, &actorUserID, &action, &jobID, &quoteID, &newTechnicianID); err != nil {
+		t.Fatalf("query audit log: %v", err)
+	}
+	if organizationID != 1 || actorUserID != 1 || action != "job_assigned" || jobID != job.ID || quoteID != 1 || newTechnicianID != 1 {
+		t.Fatalf("audit row organization=%d actor=%d action=%s job=%d quote=%d tech=%d", organizationID, actorUserID, action, jobID, quoteID, newTechnicianID)
 	}
 }
 
@@ -193,8 +272,8 @@ func TestSchedulingService_AssignJob_ConcurrentOverlapExactlyOneSuccess(t *testi
 		})
 		results <- domain.CodeOf(err)
 	}
-	go run(testutil.Manager1(), 1, "2026-05-12T10:00:00Z")
-	go run(testutil.Manager2(), 2, "2026-05-12T11:00:00Z")
+	go run(testutil.Manager1(), 1, "2026-05-12T00:00:00Z")
+	go run(testutil.Manager2(), 2, "2026-05-12T01:00:00Z")
 	close(start)
 	wg.Wait()
 	close(results)
@@ -202,7 +281,7 @@ func TestSchedulingService_AssignJob_ConcurrentOverlapExactlyOneSuccess(t *testi
 	assertResultCounts(t, results, map[domain.ErrorCode]int{"": 1, domain.ErrorScheduleConflict: 1})
 	if got := countRows(t, database, `
 		SELECT COUNT(*) FROM jobs
-		WHERE technician_id = 1 AND starts_at < '2026-05-12 13:00:00' AND ends_at > '2026-05-12 10:00:00'
+		WHERE technician_id = 1 AND starts_at < '2026-05-12 03:00:00' AND ends_at > '2026-05-12 00:00:00'
 	`); got != 1 {
 		t.Fatalf("overlapping jobs = %d", got)
 	}
@@ -226,7 +305,7 @@ func TestSchedulingService_AssignJob_ConcurrentSameQuoteExactlyOneSuccess(t *tes
 		_, _, err := service.AssignJob(context.Background(), actor, domain.AssignJobInput{
 			QuoteID:      1,
 			TechnicianID: technicianID,
-			StartsAt:     testutil.MustTime(t, "2026-05-12T10:00:00Z"),
+			StartsAt:     testutil.MustTime(t, "2026-05-12T00:00:00Z"),
 		})
 		results <- domain.CodeOf(err)
 	}

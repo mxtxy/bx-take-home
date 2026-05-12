@@ -1,6 +1,8 @@
 package httpapi
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"mime"
 	"net/http"
@@ -45,12 +47,14 @@ func NewRouter(deps Dependencies) http.Handler {
 	}
 	api := &API{deps: deps, cookieName: deps.CookieName}
 	r := chi.NewRouter()
+	r.Use(api.observability)
 	r.Use(api.cors)
 	r.Get("/healthz", api.health)
 	r.Post("/api/auth/login", api.login)
 	r.Post("/api/auth/logout", api.logout)
 	r.Get("/api/me", api.me)
 	r.Get("/api/quotes", api.listQuotes)
+	r.Post("/api/quotes", api.createQuote)
 	r.Get("/api/technicians", api.listTechnicians)
 	r.Get("/api/jobs", api.listJobs)
 	r.Post("/api/jobs", api.assignJob)
@@ -80,6 +84,22 @@ func (api *API) cors(next http.Handler) http.Handler {
 	})
 }
 
+func (api *API) observability(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestID := r.Header.Get("X-Request-Id")
+		if requestID == "" {
+			requestID = randomHex(8)
+		}
+		traceparent := r.Header.Get("Traceparent")
+		if traceparent == "" {
+			traceparent = "00-" + randomHex(16) + "-" + randomHex(8) + "-01"
+		}
+		w.Header().Set("X-Request-Id", requestID)
+		w.Header().Set("Traceparent", traceparent)
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (api *API) health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
@@ -101,7 +121,7 @@ func (api *API) login(w http.ResponseWriter, r *http.Request) {
 		Name:     api.cookieName,
 		Value:    token,
 		Path:     "/",
-		MaxAge:   int((8 * time.Hour).Seconds()),
+		MaxAge:   int(api.deps.Auth.SessionTTL().Seconds()),
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
 		Secure:   api.deps.CookieSecure,
@@ -113,6 +133,12 @@ func (api *API) logout(w http.ResponseWriter, r *http.Request) {
 	var request struct{}
 	if !decodeJSON(w, r, &request) {
 		return
+	}
+	if cookie, err := r.Cookie(api.cookieName); err == nil && cookie.Value != "" {
+		if err := api.deps.Auth.RevokeToken(r.Context(), cookie.Value); err != nil {
+			writeError(w, err)
+			return
+		}
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     api.cookieName,
@@ -150,6 +176,35 @@ func (api *API) listQuotes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string][]domain.QuoteDTO{"quotes": quotes})
+}
+
+func (api *API) createQuote(w http.ResponseWriter, r *http.Request) {
+	actor, ok := api.actor(w, r)
+	if !ok {
+		return
+	}
+	var request struct {
+		CustomerName string `json:"customerName"`
+		Description  string `json:"description"`
+	}
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	quote, err := api.deps.Quotes.CreateQuote(r.Context(), actor, domain.CreateQuoteInput{
+		CustomerName: request.CustomerName,
+		Description:  request.Description,
+	})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	api.deps.Hub.Publish([]domain.DomainEvent{{
+		Type:           "quotes.changed",
+		OrganizationID: actor.OrganizationID,
+		TargetRole:     rolePtr(domain.RoleManager),
+		QuoteID:        &quote.ID,
+	}})
+	writeJSON(w, http.StatusCreated, map[string]domain.QuoteDTO{"quote": quote})
 }
 
 func (api *API) listTechnicians(w http.ResponseWriter, r *http.Request) {
@@ -271,7 +326,12 @@ func (api *API) listNotifications(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string][]domain.NotificationDTO{"notifications": notifications})
+	unreadCount, err := api.deps.Notifications.UnreadCount(r.Context(), actor)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"notifications": notifications, "unreadCount": unreadCount})
 }
 
 func (api *API) markNotificationRead(w http.ResponseWriter, r *http.Request) {
@@ -363,9 +423,19 @@ func statusForCode(code domain.ErrorCode) int {
 		return http.StatusForbidden
 	case domain.ErrorNotFound:
 		return http.StatusNotFound
-	case domain.ErrorQuoteAlreadyScheduled, domain.ErrorScheduleConflict, domain.ErrorCompletedJobImmutable, domain.ErrorJobAlreadyCompleted:
+	case domain.ErrorQuoteAlreadyScheduled, domain.ErrorScheduleConflict, domain.ErrorTechnicianUnavailable, domain.ErrorCompletedJobImmutable, domain.ErrorJobAlreadyCompleted:
 		return http.StatusConflict
 	default:
 		return http.StatusInternalServerError
 	}
+}
+
+func rolePtr(value domain.Role) *domain.Role {
+	return &value
+}
+
+func randomHex(byteCount int) string {
+	bytes := make([]byte, byteCount)
+	_, _ = rand.Read(bytes)
+	return hex.EncodeToString(bytes)
 }

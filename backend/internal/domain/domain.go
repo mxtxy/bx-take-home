@@ -3,6 +3,7 @@ package domain
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -45,6 +46,7 @@ const (
 	ErrorInvalidCredentials    ErrorCode = "invalid_credentials"
 	ErrorQuoteAlreadyScheduled ErrorCode = "quote_already_scheduled"
 	ErrorScheduleConflict      ErrorCode = "schedule_conflict"
+	ErrorTechnicianUnavailable ErrorCode = "technician_unavailable"
 	ErrorCompletedJobImmutable ErrorCode = "completed_job_immutable"
 	ErrorJobAlreadyCompleted   ErrorCode = "job_already_completed"
 	ErrorInternal              ErrorCode = "internal_error"
@@ -79,6 +81,8 @@ func ErrorMessage(code ErrorCode) string {
 		return "Quote has already been scheduled."
 	case ErrorScheduleConflict:
 		return "Technician already has a job in that time window."
+	case ErrorTechnicianUnavailable:
+		return "Technician is not available in that time window."
 	case ErrorCompletedJobImmutable:
 		return "Completed jobs cannot be rescheduled."
 	case ErrorJobAlreadyCompleted:
@@ -104,12 +108,18 @@ func CodeOf(err error) ErrorCode {
 }
 
 type Actor struct {
-	UserID       int64  `json:"id"`
-	Email        string `json:"email"`
-	DisplayName  string `json:"displayName"`
-	Role         Role   `json:"role"`
-	ManagerID    *int64 `json:"managerId"`
-	TechnicianID *int64 `json:"technicianId"`
+	UserID         int64  `json:"id"`
+	OrganizationID int64  `json:"organizationId"`
+	Email          string `json:"email"`
+	DisplayName    string `json:"displayName"`
+	Role           Role   `json:"role"`
+	ManagerID      *int64 `json:"managerId"`
+	TechnicianID   *int64 `json:"technicianId"`
+}
+
+type CreateQuoteInput struct {
+	CustomerName string
+	Description  string
 }
 
 type AssignJobInput struct {
@@ -134,23 +144,32 @@ type TimeWindow struct {
 }
 
 type QuoteDTO struct {
-	ID           int64       `json:"id"`
-	CustomerName string      `json:"customerName"`
-	Description  string      `json:"description"`
-	Status       QuoteStatus `json:"status"`
-	CreatedAt    time.Time   `json:"createdAt"`
-	UpdatedAt    time.Time   `json:"updatedAt"`
+	ID             int64       `json:"id"`
+	OrganizationID int64       `json:"organizationId"`
+	CustomerName   string      `json:"customerName"`
+	Description    string      `json:"description"`
+	Status         QuoteStatus `json:"status"`
+	CreatedAt      time.Time   `json:"createdAt"`
+	UpdatedAt      time.Time   `json:"updatedAt"`
 }
 
 type TechnicianDTO struct {
-	ID          int64  `json:"id"`
-	UserID      int64  `json:"userId"`
-	DisplayName string `json:"displayName"`
-	Email       string `json:"email"`
+	ID           int64                 `json:"id"`
+	UserID       int64                 `json:"userId"`
+	DisplayName  string                `json:"displayName"`
+	Email        string                `json:"email"`
+	Availability []AvailabilityRuleDTO `json:"availability"`
+}
+
+type AvailabilityRuleDTO struct {
+	Weekday  int    `json:"weekday"`
+	StartsAt string `json:"startsAt"`
+	EndsAt   string `json:"endsAt"`
 }
 
 type JobDTO struct {
 	ID                int64      `json:"id"`
+	OrganizationID    int64      `json:"organizationId"`
 	QuoteID           int64      `json:"quoteId"`
 	QuoteCustomerName string     `json:"quoteCustomerName,omitempty"`
 	QuoteDescription  string     `json:"quoteDescription,omitempty"`
@@ -167,16 +186,18 @@ type JobDTO struct {
 }
 
 type NotificationDTO struct {
-	ID        int64            `json:"id"`
-	Type      NotificationType `json:"type"`
-	Message   string           `json:"message"`
-	JobID     *int64           `json:"jobId"`
-	ReadAt    *time.Time       `json:"readAt"`
-	CreatedAt time.Time        `json:"createdAt"`
+	ID             int64            `json:"id"`
+	OrganizationID int64            `json:"organizationId"`
+	Type           NotificationType `json:"type"`
+	Message        string           `json:"message"`
+	JobID          *int64           `json:"jobId"`
+	ReadAt         *time.Time       `json:"readAt"`
+	CreatedAt      time.Time        `json:"createdAt"`
 }
 
 type DomainEvent struct {
 	Type           string
+	OrganizationID int64
 	TargetUserID   *int64
 	TargetRole     *Role
 	JobID          *int64
@@ -194,6 +215,13 @@ func CalculateWindow(startsAt time.Time) TimeWindow {
 
 func ValidateStartsAt(startsAt time.Time) error {
 	if startsAt.Second() != 0 || startsAt.Nanosecond() != 0 {
+		return Errorf(ErrorInvalidInput)
+	}
+	return nil
+}
+
+func ValidateCreateQuoteInput(input CreateQuoteInput) error {
+	if strings.TrimSpace(input.CustomerName) == "" || strings.TrimSpace(input.Description) == "" {
 		return Errorf(ErrorInvalidInput)
 	}
 	return nil

@@ -24,6 +24,25 @@ func TestJobQueryService_ListJobs_ManagerSeesOwnJobsOnly(t *testing.T) {
 	if len(jobs) != 1 || jobs[0].ID != job1 {
 		t.Fatalf("jobs = %#v", jobs)
 	}
+	if jobs[0].OrganizationID != 1 {
+		t.Fatalf("organization id = %d", jobs[0].OrganizationID)
+	}
+}
+
+func TestJobQueryService_ListJobs_FiltersByOrganization(t *testing.T) {
+	database := testutil.PrepareDB(t)
+	testutil.InsertOtherOrganizationFixture(t, database)
+	jobID := testutil.InsertScheduledJob(t, database, 1, 1, 1, "2026-05-12T10:00:00Z")
+	_ = testutil.InsertScheduledJob(t, database, 6, 3, 3, "2026-05-12T10:00:00Z")
+	service := NewQueryService(database)
+
+	jobs, err := service.ListJobs(context.Background(), testutil.Manager1())
+	if err != nil {
+		t.Fatalf("list jobs: %v", err)
+	}
+	if len(jobs) != 1 || jobs[0].ID != jobID {
+		t.Fatalf("manager1 jobs = %#v", jobs)
+	}
 }
 
 func TestJobQueryService_ListJobs_TechnicianSeesAssignedJobsOnly(t *testing.T) {
@@ -147,13 +166,13 @@ func TestJobQueryService_ListJobs_ReturnsScanError(t *testing.T) {
 	}
 	defer database.Close()
 	rows := sqlmock.NewRows([]string{
-		"id", "quote_id", "customer_name", "description",
+		"id", "organization_id", "quote_id", "customer_name", "description",
 		"technician_id", "technician_name",
 		"manager_id", "manager_name",
 		"starts_at", "ends_at", "status", "completed_at",
 		"created_at", "updated_at",
 	}).AddRow(
-		"bad-id", int64(1), "Acme Plumbing", "Replace tap",
+		"bad-id", int64(1), int64(1), "Acme Plumbing", "Replace tap",
 		int64(1), "Tom Technician",
 		int64(1), "Sarah Manager",
 		time.Now(), time.Now(), "scheduled", nil,

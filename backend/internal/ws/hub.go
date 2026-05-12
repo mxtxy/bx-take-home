@@ -18,10 +18,11 @@ type ServerEvent struct {
 }
 
 type subscriber struct {
-	userID int64
-	role   domain.Role
-	ch     chan ServerEvent
-	done   chan struct{}
+	userID         int64
+	organizationID int64
+	role           domain.Role
+	ch             chan ServerEvent
+	done           chan struct{}
 }
 
 type Hub struct {
@@ -38,8 +39,12 @@ func NewHub() *Hub {
 	}
 }
 
-func (h *Hub) RegisterTestConnection(userID int64, role domain.Role) (<-chan ServerEvent, func()) {
-	sub := h.register(userID, role)
+func (h *Hub) RegisterTestConnection(userID int64, role domain.Role, organizationIDs ...int64) (<-chan ServerEvent, func()) {
+	organizationID := int64(1)
+	if len(organizationIDs) > 0 {
+		organizationID = organizationIDs[0]
+	}
+	sub := h.register(userID, organizationID, role)
 	return sub.ch, func() { h.unregister(sub) }
 }
 
@@ -53,10 +58,17 @@ func (h *Hub) SendToUser(userID int64, event ServerEvent) {
 	sendAll(recipients, event)
 }
 
-func (h *Hub) BroadcastToRole(role domain.Role, event ServerEvent) {
+func (h *Hub) BroadcastToRole(role domain.Role, event ServerEvent, organizationIDs ...int64) {
+	organizationID := int64(0)
+	if len(organizationIDs) > 0 {
+		organizationID = organizationIDs[0]
+	}
 	h.mu.RLock()
 	var recipients []*subscriber
 	for sub := range h.roles[role] {
+		if organizationID != 0 && sub.organizationID != organizationID {
+			continue
+		}
 		recipients = append(recipients, sub)
 	}
 	h.mu.RUnlock()
@@ -81,17 +93,18 @@ func (h *Hub) Publish(events []domain.DomainEvent) {
 			h.SendToUser(*event.TargetUserID, serverEvent)
 		}
 		if event.TargetRole != nil {
-			h.BroadcastToRole(*event.TargetRole, serverEvent)
+			h.BroadcastToRole(*event.TargetRole, serverEvent, event.OrganizationID)
 		}
 	}
 }
 
-func (h *Hub) register(userID int64, role domain.Role) *subscriber {
+func (h *Hub) register(userID int64, organizationID int64, role domain.Role) *subscriber {
 	sub := &subscriber{
-		userID: userID,
-		role:   role,
-		ch:     make(chan ServerEvent, 16),
-		done:   make(chan struct{}),
+		userID:         userID,
+		organizationID: organizationID,
+		role:           role,
+		ch:             make(chan ServerEvent, 16),
+		done:           make(chan struct{}),
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -185,7 +198,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	sub := h.hub.register(actor.UserID, actor.Role)
+	sub := h.hub.register(actor.UserID, actor.OrganizationID, actor.Role)
 	conn, err := h.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		h.hub.unregister(sub)

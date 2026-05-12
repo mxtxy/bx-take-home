@@ -55,6 +55,24 @@ func TestWebSocketHub_BroadcastToManagers(t *testing.T) {
 	assertNoEvent(t, technician1)
 }
 
+func TestWebSocketHub_BroadcastToRoleScopesByOrganization(t *testing.T) {
+	hub := NewHub()
+	manager1, cleanup1 := hub.RegisterTestConnection(1, domain.RoleManager, 1)
+	defer cleanup1()
+	manager3, cleanup2 := hub.RegisterTestConnection(5, domain.RoleManager, 2)
+	defer cleanup2()
+
+	hub.Publish([]domain.DomainEvent{{
+		Type:           "quotes.changed",
+		TargetRole:     rolePtr(domain.RoleManager),
+		OrganizationID: 1,
+		QuoteID:        int64Ptr(1),
+	}})
+
+	assertReceiveEvent(t, manager1, "quotes.changed")
+	assertNoEvent(t, manager3)
+}
+
 func TestWebSocketHub_PublishIgnoresUnknownEvents(t *testing.T) {
 	hub := NewHub()
 	events, cleanup := hub.RegisterTestConnection(1, domain.RoleManager)
@@ -223,7 +241,7 @@ func TestWebSocketEndpoint_AssignmentSendsNotificationToTechnician(t *testing.T)
 	_, events, err := service.AssignJob(context.Background(), testutil.Manager1(), domain.AssignJobInput{
 		QuoteID:      1,
 		TechnicianID: 1,
-		StartsAt:     testutil.MustTime(t, "2026-05-12T10:00:00Z"),
+		StartsAt:     testutil.MustTime(t, "2026-05-12T00:00:00Z"),
 	})
 	if err != nil {
 		t.Fatalf("assign: %v", err)
@@ -232,6 +250,32 @@ func TestWebSocketEndpoint_AssignmentSendsNotificationToTechnician(t *testing.T)
 
 	assertReadSocketEvent(t, conn, "notification.created")
 	assertReadSocketEvent(t, conn, "jobs.changed")
+}
+
+func TestWebSocketEndpoint_QuoteChangeDoesNotReachOtherOrganizationManager(t *testing.T) {
+	database := testutil.PrepareDB(t)
+	testutil.InsertOtherOrganizationFixture(t, database)
+	authService := auth.NewService(database, auth.Options{Secret: "test-secret", Now: testutil.FixedTime})
+	hub := NewHub()
+	handler := NewHandler(authService, hub, "brix_session")
+	server := httptest.NewServer(http.HandlerFunc(handler.ServeHTTP))
+	defer server.Close()
+	token, _ := authService.SignToken(5, domain.RoleManager, testutil.FixedTime().Add(time.Hour))
+	conn := dialWithToken(t, server.URL, token)
+	defer conn.Close()
+
+	service := scheduling.NewService(database, scheduling.Options{Clock: testutil.FixedTime})
+	_, events, err := service.AssignJob(context.Background(), testutil.Manager1(), domain.AssignJobInput{
+		QuoteID:      1,
+		TechnicianID: 1,
+		StartsAt:     testutil.MustTime(t, "2026-05-12T00:00:00Z"),
+	})
+	if err != nil {
+		t.Fatalf("assign: %v", err)
+	}
+	hub.Publish(events)
+
+	assertNoSocketEvent(t, conn)
 }
 
 func TestWebSocketEndpoint_CompletionSendsNotificationToManager(t *testing.T) {
@@ -383,6 +427,22 @@ func assertReadSocketEvent(t *testing.T, conn *websocket.Conn, eventType string)
 	if event.Type != eventType {
 		t.Fatalf("event type = %s, want %s", event.Type, eventType)
 	}
+}
+
+func assertNoSocketEvent(t *testing.T, conn *websocket.Conn) {
+	t.Helper()
+	if err := conn.SetReadDeadline(time.Now().Add(50 * time.Millisecond)); err != nil {
+		t.Fatalf("set deadline: %v", err)
+	}
+	var event ServerEvent
+	err := conn.ReadJSON(&event)
+	if err == nil {
+		t.Fatalf("unexpected event: %#v", event)
+	}
+}
+
+func rolePtr(value domain.Role) *domain.Role {
+	return &value
 }
 
 type fakeDeadlineSetter struct {

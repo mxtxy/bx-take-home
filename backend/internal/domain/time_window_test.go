@@ -153,6 +153,7 @@ func TestErrorMessage_AllCodes(t *testing.T) {
 		ErrorInvalidCredentials:    "Invalid email or password.",
 		ErrorQuoteAlreadyScheduled: "Quote has already been scheduled.",
 		ErrorScheduleConflict:      "Technician already has a job in that time window.",
+		ErrorTechnicianUnavailable: "Technician is not available in that time window.",
 		ErrorCompletedJobImmutable: "Completed jobs cannot be rescheduled.",
 		ErrorJobAlreadyCompleted:   "Job has already been completed.",
 		ErrorInternal:              "Internal server error.",
@@ -163,6 +164,18 @@ func TestErrorMessage_AllCodes(t *testing.T) {
 				t.Fatalf("ErrorMessage(%q) = %q, want %q", code, got, want)
 			}
 		})
+	}
+}
+
+func TestValidateCreateQuoteInput(t *testing.T) {
+	if code := CodeOf(ValidateCreateQuoteInput(CreateQuoteInput{CustomerName: " ", Description: "Install"})); code != ErrorInvalidInput {
+		t.Fatalf("blank customer code = %v", code)
+	}
+	if code := CodeOf(ValidateCreateQuoteInput(CreateQuoteInput{CustomerName: "Sydney Bakery", Description: ""})); code != ErrorInvalidInput {
+		t.Fatalf("blank description code = %v", code)
+	}
+	if err := ValidateCreateQuoteInput(CreateQuoteInput{CustomerName: "Sydney Bakery", Description: "Install"}); err != nil {
+		t.Fatalf("valid quote input: %v", err)
 	}
 }
 

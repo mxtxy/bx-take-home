@@ -41,6 +41,46 @@ func TestNotificationService_ListNotifications_ReturnsOnlyActorNotifications(t *
 	if len(notifications) != 1 || notifications[0].Message != "manager notification" {
 		t.Fatalf("notifications = %#v", notifications)
 	}
+	if notifications[0].OrganizationID != 1 {
+		t.Fatalf("organization id = %d", notifications[0].OrganizationID)
+	}
+}
+
+func TestNotificationService_UnreadCountCountsOnlyActorUnreadNotifications(t *testing.T) {
+	service, database := newTestNotificationService(t)
+	jobID := testutil.InsertScheduledJob(t, database, 1, 1, 1, "2026-05-12T10:00:00Z")
+	readID := insertNotificationRow(t, database, 1, jobID, "job_completed", "read", "2026-05-12 10:00:00")
+	insertNotificationRow(t, database, 1, jobID, "job_completed", "unread", "2026-05-12 11:00:00")
+	insertNotificationRow(t, database, 3, jobID, "job_assigned", "other user", "2026-05-12 12:00:00")
+	if _, err := database.Exec(`UPDATE notifications SET read_at = '2026-05-12 15:00:00' WHERE id = ?`, readID); err != nil {
+		t.Fatalf("set read_at: %v", err)
+	}
+
+	count, err := service.UnreadCount(context.Background(), testutil.Manager1())
+	if err != nil {
+		t.Fatalf("unread count: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("unread count = %d", count)
+	}
+}
+
+func TestNotificationService_UnreadCount_ReturnsQueryError(t *testing.T) {
+	database, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer database.Close()
+	mock.ExpectQuery("SELECT COUNT").WillReturnError(errors.New("count failed"))
+	service := NewService(database, Options{})
+
+	_, err = service.UnreadCount(context.Background(), testutil.Manager1())
+	if err == nil {
+		t.Fatal("expected count error")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expectations: %v", err)
+	}
 }
 
 func TestNotificationService_ListNotifications_SortedNewestFirst(t *testing.T) {
@@ -101,7 +141,7 @@ func TestNotificationService_ListNotifications_ReturnsQueryError(t *testing.T) {
 		t.Fatalf("sqlmock: %v", err)
 	}
 	defer database.Close()
-	mock.ExpectQuery("SELECT id, type, message").WillReturnError(errors.New("query failed"))
+	mock.ExpectQuery("SELECT id, organization_id").WillReturnError(errors.New("query failed"))
 	service := NewService(database, Options{})
 
 	_, err = service.ListNotifications(context.Background(), testutil.Manager1())
@@ -119,9 +159,9 @@ func TestNotificationService_ListNotifications_ReturnsScanError(t *testing.T) {
 		t.Fatalf("sqlmock: %v", err)
 	}
 	defer database.Close()
-	rows := sqlmock.NewRows([]string{"id", "type", "message", "job_id", "read_at", "created_at"}).
-		AddRow("bad-id", "job_assigned", "message", nil, nil, time.Now())
-	mock.ExpectQuery("SELECT id, type, message").WillReturnRows(rows)
+	rows := sqlmock.NewRows([]string{"id", "organization_id", "type", "message", "job_id", "read_at", "created_at"}).
+		AddRow("bad-id", int64(1), "job_assigned", "message", nil, nil, time.Now())
+	mock.ExpectQuery("SELECT id, organization_id").WillReturnRows(rows)
 	service := NewService(database, Options{})
 
 	_, err = service.ListNotifications(context.Background(), testutil.Manager1())
@@ -219,7 +259,7 @@ func TestNotificationService_MarkRead_ReturnsSelectError(t *testing.T) {
 	}
 	defer database.Close()
 	mock.ExpectBegin()
-	mock.ExpectQuery("SELECT id, recipient_user_id").WithArgs(int64(1)).WillReturnError(errors.New("select failed"))
+	mock.ExpectQuery("SELECT id, organization_id").WithArgs(int64(1)).WillReturnError(errors.New("select failed"))
 	service := NewService(database, Options{})
 
 	_, err = service.MarkRead(context.Background(), testutil.Manager1(), 1)
@@ -238,7 +278,7 @@ func TestNotificationService_MarkRead_ReturnsUpdateError(t *testing.T) {
 	}
 	defer database.Close()
 	mock.ExpectBegin()
-	mock.ExpectQuery("SELECT id, recipient_user_id").WithArgs(int64(1)).WillReturnRows(notificationRows(false))
+	mock.ExpectQuery("SELECT id, organization_id").WithArgs(int64(1)).WillReturnRows(notificationRows(false))
 	mock.ExpectExec("UPDATE notifications SET read_at").WillReturnError(errors.New("update failed"))
 	service := NewService(database, Options{Clock: testutil.FixedTime})
 
@@ -258,7 +298,7 @@ func TestNotificationService_MarkRead_ReturnsCommitError(t *testing.T) {
 	}
 	defer database.Close()
 	mock.ExpectBegin()
-	mock.ExpectQuery("SELECT id, recipient_user_id").WithArgs(int64(1)).WillReturnRows(notificationRows(false))
+	mock.ExpectQuery("SELECT id, organization_id").WithArgs(int64(1)).WillReturnRows(notificationRows(false))
 	mock.ExpectExec("UPDATE notifications SET read_at").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit().WillReturnError(errors.New("commit failed"))
 	service := NewService(database, Options{Clock: testutil.FixedTime})
@@ -275,8 +315,8 @@ func TestNotificationService_MarkRead_ReturnsCommitError(t *testing.T) {
 func insertNotificationRow(t *testing.T, database *sql.DB, recipientUserID int64, jobID int64, notificationType string, message string, createdAt string) int64 {
 	t.Helper()
 	result, err := database.Exec(`
-		INSERT INTO notifications (recipient_user_id, actor_user_id, job_id, type, message, created_at)
-		VALUES (?, 1, ?, ?, ?, ?)
+		INSERT INTO notifications (organization_id, recipient_user_id, actor_user_id, job_id, type, message, created_at)
+		VALUES (1, ?, 1, ?, ?, ?, ?)
 	`, recipientUserID, jobID, notificationType, message, createdAt)
 	if err != nil {
 		t.Fatalf("insert notification: %v", err)
@@ -305,6 +345,6 @@ func notificationRows(read bool) *sqlmock.Rows {
 	if read {
 		readAt = testutil.FixedTime()
 	}
-	return sqlmock.NewRows([]string{"id", "recipient_user_id", "type", "message", "job_id", "read_at", "created_at"}).
-		AddRow(int64(1), int64(1), "job_completed", "message", int64(1), readAt, testutil.FixedTime())
+	return sqlmock.NewRows([]string{"id", "organization_id", "recipient_user_id", "type", "message", "job_id", "read_at", "created_at"}).
+		AddRow(int64(1), int64(1), int64(1), "job_completed", "message", int64(1), readAt, testutil.FixedTime())
 }
