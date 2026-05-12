@@ -176,7 +176,7 @@ describe("app shell", () => {
     await userEvent.click(screen.getByRole("button", { name: "Open notifications" }));
 
     expect(screen.getByRole("dialog", { name: "Notifications" })).toHaveTextContent("Read notification");
-    expect(screen.getByRole("dialog", { name: "Notifications" })).toHaveTextContent("May 12");
+    expect(screen.getByRole("dialog", { name: "Notifications" })).toHaveTextContent("12 May");
 
     await userEvent.keyboard("{Escape}");
 

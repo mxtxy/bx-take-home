@@ -342,7 +342,7 @@ describe("manager dashboard", () => {
     expect(screen.getByRole("dialog", { name: "Notifications" })).toBeInTheDocument();
     expect(screen.getByRole("dialog", { name: "Notifications" })).toHaveTextContent("1 unread");
     expect(screen.getByRole("dialog", { name: "Notifications" })).toHaveTextContent("Job #1 has been updated.");
-    expect(screen.getByRole("dialog", { name: "Notifications" })).toHaveTextContent("May 12");
+    expect(screen.getByRole("dialog", { name: "Notifications" })).toHaveTextContent("12 May");
   });
 
   test("Manager load failure redirects to login", async () => {

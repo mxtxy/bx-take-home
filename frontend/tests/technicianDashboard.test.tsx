@@ -70,7 +70,7 @@ describe("technician dashboard", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Open notifications" }));
 
     expect(screen.getByRole("dialog", { name: "Notifications" })).toHaveTextContent("You have been assigned job #1 for Acme Plumbing.");
-    expect(screen.getByRole("dialog", { name: "Notifications" })).toHaveTextContent("May 12");
+    expect(screen.getByRole("dialog", { name: "Notifications" })).toHaveTextContent("12 May");
   });
 
   test("Technician unread notification count falls back to unread notifications when count is omitted", async () => {

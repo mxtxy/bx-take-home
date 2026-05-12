@@ -38,7 +38,7 @@ test("technician sees assigned job and notification", async ({ page }) => {
   await expect(page.getByRole("table", { name: "Assigned jobs" })).toContainText("2026-05-12 10:00 - 2026-05-12 12:00 Sydney");
   await page.getByRole("button", { name: "Open notifications" }).click();
   await expect(page.getByRole("dialog", { name: "Notifications" })).toContainText(/assigned job #1 for Acme Plumbing/i);
-  await expect(page.getByRole("dialog", { name: "Notifications" })).toContainText("May 12");
+  await expect(page.getByRole("dialog", { name: "Notifications" })).toContainText("12 May");
   await page.getByRole("button", { name: /Mark notification .* as read/ }).click();
   await expect(page.getByRole("dialog", { name: "Notifications" })).toContainText("0 unread");
 });

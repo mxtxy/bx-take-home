@@ -307,7 +307,7 @@ function ColorModeButton() {
 }
 
 function formatNotificationTime(value: string): string {
-  return new Date(value).toLocaleString(undefined, {
+  return new Date(value).toLocaleString("en-AU", {
     month: "short",
     day: "numeric",
     hour: "numeric",
