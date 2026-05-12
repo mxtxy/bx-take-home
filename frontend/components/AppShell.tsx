@@ -17,7 +17,7 @@ import Tooltip from "@mui/joy/Tooltip";
 import Typography from "@mui/joy/Typography";
 import { useColorScheme } from "@mui/joy/styles";
 import { Bell, Briefcase, CalendarPlus, ClipboardList, LogOut, Menu, Moon, Sun, X } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useState, type CSSProperties, type ReactNode } from "react";
 
 type ShellNotification = {
   id: number;
@@ -223,11 +223,20 @@ export function AppShell({
       </Box>
 
       {notificationsOpen ? (
-        <Drawer anchor="right" open onClose={() => setNotificationsOpen(false)}>
+        <Drawer
+          anchor="right"
+          open
+          onClose={() => setNotificationsOpen(false)}
+          slotProps={{
+            content: {
+              style: { "--Drawer-horizontalSize": "380px" } as CSSProperties
+            }
+          }}
+        >
           <Sheet
             aria-label="Notifications"
             role="dialog"
-            sx={{ height: "100%", maxWidth: 380, p: 2, width: "min(100vw, 380px)" }}
+            sx={{ height: "100%", p: 2, width: "100%" }}
             variant="outlined"
           >
             <Stack spacing={2}>

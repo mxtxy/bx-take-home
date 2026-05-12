@@ -197,6 +197,33 @@ describe("app shell", () => {
     expect(screen.getByRole("dialog", { name: "Notifications" })).toHaveTextContent("No notifications");
   });
 
+  test("Notification drawer keeps a full-height right pane aligned to the notification panel width", async () => {
+    render(
+      <AppProviders>
+        <AppShell userName="Sarah Manager" roleLabel="Manager" activePage="manager" notificationCount={0} onLogout={() => undefined}>
+          <span>Dashboard child</span>
+        </AppShell>
+      </AppProviders>
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Open notifications" }));
+
+    const dialog = screen.getByRole("dialog", { name: "Notifications" });
+    const drawerContent = dialog.parentElement;
+
+    expect(drawerContent).toHaveClass("MuiDrawer-content");
+    expect(getComputedStyle(drawerContent!).getPropertyValue("--Drawer-horizontalSize").trim()).toBe("380px");
+    expect(drawerContent).toHaveStyle({ width: "min(100vw, var(--Drawer-horizontalSize))" });
+    expect(drawerContent).toHaveStyle({ height: "100%" });
+    expect(dialog).toHaveStyle({ height: "100%", width: "100%" });
+    const drawerContentRule = document.head.textContent!.match(/\.css-[^{]+-JoyDrawer-content\{[^}]*\}/)?.[0] ?? "";
+    expect(drawerContentRule).toMatch(/right:\s*0/);
+    expect(drawerContentRule).toMatch(/top:\s*0/);
+    expect(drawerContentRule).not.toMatch(/right:\s*24px/);
+    expect(drawerContentRule).not.toMatch(/top:\s*24px/);
+    expect(drawerContentRule).not.toMatch(/max-height:\s*calc\(100dvh - 48px\)/);
+  });
+
   test("Notification drawer marks unread notifications as read", async () => {
     const markRead = vi.fn().mockResolvedValue(undefined);
 
