@@ -4,6 +4,7 @@ export type JobStatus = "scheduled" | "completed";
 
 export type User = {
   id: number;
+  organizationId?: number;
   email?: string;
   displayName: string;
   role: Role;
@@ -13,6 +14,7 @@ export type User = {
 
 export type Quote = {
   id: number;
+  organizationId?: number;
   customerName: string;
   description: string;
   status: QuoteStatus;
@@ -25,10 +27,18 @@ export type Technician = {
   userId: number;
   displayName: string;
   email: string;
+  availability?: TechnicianAvailabilityRule[];
+};
+
+export type TechnicianAvailabilityRule = {
+  weekday: number;
+  startsAt: string;
+  endsAt: string;
 };
 
 export type Job = {
   id: number;
+  organizationId?: number;
   quoteId: number;
   quoteCustomerName?: string;
   quoteDescription?: string;
@@ -44,6 +54,7 @@ export type Job = {
 
 export type Notification = {
   id: number;
+  organizationId?: number;
   type: "job_assigned" | "job_updated" | "job_completed";
   message: string;
   jobId: number | null;
@@ -94,6 +105,13 @@ export async function listQuotes(status?: QuoteStatus): Promise<{ quotes: Quote[
   return apiFetch(`/api/quotes${query}`);
 }
 
+export async function createQuote(input: { customerName: string; description: string }): Promise<{ quote: Quote }> {
+  return apiFetch("/api/quotes", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
 export async function listTechnicians(): Promise<{ technicians: Technician[] }> {
   return apiFetch("/api/technicians");
 }
@@ -127,7 +145,7 @@ export async function completeJob(jobId: number): Promise<{ job: Job }> {
   });
 }
 
-export async function listNotifications(): Promise<{ notifications: Notification[] }> {
+export async function listNotifications(): Promise<{ notifications: Notification[]; unreadCount: number }> {
   return apiFetch("/api/notifications");
 }
 
@@ -139,11 +157,31 @@ export async function markNotificationRead(notificationId: number): Promise<{ no
 }
 
 export function openEventSocket(onEvent: (event: ServerEvent) => void): () => void {
-  const socket = new WebSocket(WS_URL);
-  socket.onmessage = (message) => {
-    onEvent(JSON.parse(message.data) as ServerEvent);
+  let closed = false;
+  let socket: WebSocket | null = null;
+  let retry: ReturnType<typeof setTimeout> | null = null;
+
+  const connect = () => {
+    socket = new WebSocket(WS_URL);
+    socket.onmessage = (message) => {
+      onEvent(JSON.parse(message.data) as ServerEvent);
+    };
+    socket.onclose = () => {
+      if (!closed) {
+        retry = setTimeout(connect, 1000);
+      }
+    };
   };
-  return () => socket.close();
+
+  connect();
+
+  return () => {
+    closed = true;
+    if (retry !== null) {
+      clearTimeout(retry);
+    }
+    socket?.close();
+  };
 }
 
 async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {

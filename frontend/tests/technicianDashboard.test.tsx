@@ -1,12 +1,14 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import TechnicianPage from "../app/technician/page";
+import { AppProviders } from "../components/AppProviders";
 
 const api = vi.hoisted(() => ({
   getMe: vi.fn(),
   listJobs: vi.fn(),
   listNotifications: vi.fn(),
+  markNotificationRead: vi.fn(),
   completeJob: vi.fn(),
   logout: vi.fn(),
   openEventSocket: vi.fn()
@@ -19,56 +21,119 @@ describe("technician dashboard", () => {
     vi.clearAllMocks();
     api.getMe.mockResolvedValue({ user: technicianUser });
     api.listJobs.mockResolvedValue({ jobs: [scheduledJob] });
-    api.listNotifications.mockResolvedValue({ notifications: [assignmentNotification] });
+    api.listNotifications.mockResolvedValue({ notifications: [assignmentNotification], unreadCount: 1 });
+    api.markNotificationRead.mockResolvedValue({ notification: { ...assignmentNotification, readAt: "2026-05-12T11:00:00Z" } });
     api.completeJob.mockResolvedValue({ job: { ...scheduledJob, status: "completed" } });
     api.openEventSocket.mockReturnValue(() => undefined);
   });
 
   test("Technician dashboard renders jobs list", async () => {
-    render(<TechnicianPage />);
-    expect(await screen.findByText("Acme Plumbing")).toBeInTheDocument();
+    renderTechnicianPage();
+    const table = await screen.findByRole("table", { name: "Assigned jobs" });
+
+    expect(table).toHaveTextContent("Acme Plumbing");
+    expect(table).toHaveTextContent("2026-05-12 08:00 - 2026-05-12 10:00 Sydney");
+  });
+
+  test("Technician jobs table matches the manager table interface", async () => {
+    renderTechnicianPage();
+
+    const table = await screen.findByRole("table", { name: "Assigned jobs" });
+    const heading = screen.getByRole("heading", { name: "Assigned jobs" });
+
+    expect(heading.compareDocumentPosition(table)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(table.parentElement).not.toHaveTextContent("Assigned jobs");
+    expect(table).toHaveAttribute("data-table-interface", "manager");
+    expect(within(table).getByRole("columnheader", { name: "Quote" })).toBeInTheDocument();
   });
 
   test("Scheduled job renders Complete button", async () => {
-    render(<TechnicianPage />);
+    renderTechnicianPage();
     expect(await screen.findByRole("button", { name: /complete/i })).toBeInTheDocument();
   });
 
   test("Completed job does not render Complete button", async () => {
     api.listJobs.mockResolvedValue({ jobs: [{ ...scheduledJob, status: "completed", completedAt: "2026-05-12T16:00:00Z" }] });
-    render(<TechnicianPage />);
+    renderTechnicianPage();
     await screen.findByText("completed");
     expect(screen.queryByRole("button", { name: /complete/i })).not.toBeInTheDocument();
   });
 
   test("Completed job renders completed status chip", async () => {
     api.listJobs.mockResolvedValue({ jobs: [{ ...scheduledJob, status: "completed", completedAt: "2026-05-12T16:00:00Z" }] });
-    render(<TechnicianPage />);
+    renderTechnicianPage();
     expect(await screen.findByText("completed")).toBeInTheDocument();
   });
 
-  test("Assignment notification renders in notifications panel", async () => {
-    render(<TechnicianPage />);
-    expect(await screen.findByText(/assigned job/i)).toBeInTheDocument();
+  test("Assignment notification renders in the notification drawer", async () => {
+    renderTechnicianPage();
+    await userEvent.click(await screen.findByRole("button", { name: "Open notifications" }));
+
+    expect(screen.getByRole("dialog", { name: "Notifications" })).toHaveTextContent("You have been assigned job #1 for Acme Plumbing.");
+    expect(screen.getByRole("dialog", { name: "Notifications" })).toHaveTextContent("May 12");
+  });
+
+  test("Technician unread notification count falls back to unread notifications when count is omitted", async () => {
+    api.listNotifications.mockResolvedValue({ notifications: [assignmentNotification] });
+    renderTechnicianPage();
+
+    expect(await screen.findByText("1 unread")).toBeInTheDocument();
+  });
+
+  test("Technician marks notifications as read from the drawer", async () => {
+    api.listNotifications
+      .mockResolvedValueOnce({ notifications: [assignmentNotification], unreadCount: 1 })
+      .mockResolvedValueOnce({ notifications: [{ ...assignmentNotification, readAt: "2026-05-12T11:00:00Z" }], unreadCount: 0 });
+    renderTechnicianPage();
+
+    await userEvent.click(await screen.findByRole("button", { name: "Open notifications" }));
+    await userEvent.click(screen.getByRole("button", { name: "Mark notification 1 as read" }));
+
+    await waitFor(() => expect(api.markNotificationRead).toHaveBeenCalledWith(1));
+    await waitFor(() => expect(screen.getAllByText("0 unread").length).toBeGreaterThan(0));
   });
 
   test("Successful completion triggers jobs refetch", async () => {
-    render(<TechnicianPage />);
+    renderTechnicianPage();
     await userEvent.click(await screen.findByRole("button", { name: /complete/i }));
     await waitFor(() => expect(api.completeJob).toHaveBeenCalledWith(1));
     expect(api.listJobs).toHaveBeenCalledTimes(2);
   });
 
+  test("Completion errors render through the notification popup", async () => {
+    api.completeJob.mockRejectedValue(new Error("Job has already been completed."));
+    renderTechnicianPage();
+    await userEvent.click(await screen.findByRole("button", { name: /complete/i }));
+
+    expect(await screen.findByLabelText("Notification popup")).toHaveTextContent("Job has already been completed.");
+  });
+
+  test("Completion object error messages render through the notification popup", async () => {
+    api.completeJob.mockRejectedValue({ message: "Job is no longer assigned to you." });
+    renderTechnicianPage();
+    await userEvent.click(await screen.findByRole("button", { name: /complete/i }));
+
+    expect(await screen.findByLabelText("Notification popup")).toHaveTextContent("Job is no longer assigned to you.");
+  });
+
+  test("Completion fallback errors render through the notification popup", async () => {
+    api.completeJob.mockRejectedValue("failed");
+    renderTechnicianPage();
+    await userEvent.click(await screen.findByRole("button", { name: /complete/i }));
+
+    expect(await screen.findByLabelText("Notification popup")).toHaveTextContent("Completion failed.");
+  });
+
   test("Technician load failure redirects to login", async () => {
     api.getMe.mockRejectedValue(new Error("unauthorized"));
-    render(<TechnicianPage />);
+    renderTechnicianPage();
 
     await waitFor(() => expect(api.getMe).toHaveBeenCalled());
   });
 
   test("Logout invokes API before redirecting to login", async () => {
     api.logout.mockResolvedValue({ ok: true });
-    render(<TechnicianPage />);
+    renderTechnicianPage();
     await userEvent.click(await screen.findByRole("button", { name: /logout/i }));
 
     await waitFor(() => expect(api.logout).toHaveBeenCalled());
@@ -80,7 +145,7 @@ describe("technician dashboard", () => {
       listener = callback;
       return () => undefined;
     });
-    render(<TechnicianPage />);
+    renderTechnicianPage();
     await screen.findByText("Acme Plumbing");
     api.listNotifications.mockClear();
 
@@ -89,13 +154,48 @@ describe("technician dashboard", () => {
     await waitFor(() => expect(api.listNotifications).toHaveBeenCalled());
   });
 
+  test("notification.created WebSocket event shows live notification popup", async () => {
+    let listener: (event: { type: string }) => void = () => undefined;
+    api.openEventSocket.mockImplementation((callback) => {
+      listener = callback;
+      return () => undefined;
+    });
+    api.listNotifications
+      .mockResolvedValueOnce({ notifications: [], unreadCount: 0 })
+      .mockResolvedValueOnce({ notifications: [assignmentNotification], unreadCount: 1 });
+    renderTechnicianPage();
+    await screen.findByText("Acme Plumbing");
+
+    listener({ type: "notification.created" });
+
+    expect(await screen.findByLabelText("Notification popup")).toHaveTextContent("You have been assigned job #1 for Acme Plumbing.");
+  });
+
+  test("notification.created WebSocket event does not popup when no notification is returned", async () => {
+    let listener: (event: { type: string }) => void = () => undefined;
+    api.openEventSocket.mockImplementation((callback) => {
+      listener = callback;
+      return () => undefined;
+    });
+    api.listNotifications
+      .mockResolvedValueOnce({ notifications: [], unreadCount: 0 })
+      .mockResolvedValueOnce({ notifications: [], unreadCount: 0 });
+    renderTechnicianPage();
+    await screen.findByText("Acme Plumbing");
+
+    listener({ type: "notification.created" });
+
+    await waitFor(() => expect(api.listNotifications).toHaveBeenCalledTimes(2));
+    expect(screen.queryByLabelText("Notification popup")).not.toBeInTheDocument();
+  });
+
   test("jobs.changed WebSocket event triggers jobs refetch", async () => {
     let listener: (event: { type: string }) => void = () => undefined;
     api.openEventSocket.mockImplementation((callback) => {
       listener = callback;
       return () => undefined;
     });
-    render(<TechnicianPage />);
+    renderTechnicianPage();
     await screen.findByText("Acme Plumbing");
     api.listJobs.mockClear();
 
@@ -103,7 +203,27 @@ describe("technician dashboard", () => {
 
     await waitFor(() => expect(api.listJobs).toHaveBeenCalled());
   });
+
+  test("window focus refreshes stale technician data", async () => {
+    renderTechnicianPage();
+    await screen.findByText("Acme Plumbing");
+    api.listJobs.mockClear();
+    api.listNotifications.mockClear();
+
+    window.dispatchEvent(new Event("focus"));
+
+    await waitFor(() => expect(api.listJobs).toHaveBeenCalled());
+    expect(api.listNotifications).toHaveBeenCalled();
+  });
 });
+
+function renderTechnicianPage() {
+  render(
+    <AppProviders>
+      <TechnicianPage />
+    </AppProviders>
+  );
+}
 
 const technicianUser = { id: 3, displayName: "Tom Technician", role: "technician" };
 const scheduledJob = {
@@ -115,8 +235,8 @@ const scheduledJob = {
   technicianName: "Tom Technician",
   managerId: 1,
   managerName: "Sarah Manager",
-  startsAt: "2026-05-12T10:00:00Z",
-  endsAt: "2026-05-12T12:00:00Z",
+  startsAt: "2026-05-11T22:00:00Z",
+  endsAt: "2026-05-12T00:00:00Z",
   status: "scheduled",
   completedAt: null
 };

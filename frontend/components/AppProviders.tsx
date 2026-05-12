@@ -1,30 +1,32 @@
 "use client";
 
-import { CssBaseline, ThemeProvider, createTheme } from "@mui/material";
+import CssBaseline from "@mui/joy/CssBaseline";
+import GlobalStyles from "@mui/joy/GlobalStyles";
+import { CssVarsProvider } from "@mui/joy/styles";
 import type { ReactNode } from "react";
 
-const theme = createTheme({
-  palette: {
-    mode: "light",
-    primary: { main: "#24536b" },
-    secondary: { main: "#6b5b2a" },
-    success: { main: "#2f6d4f" },
-    warning: { main: "#9a5a18" },
-    background: { default: "#f7f8f5" }
-  },
-  shape: {
-    borderRadius: 6
-  },
-  typography: {
-    fontFamily: "Arial, Helvetica, sans-serif"
-  }
-});
+const uiCornerRadius = "12px";
 
 export function AppProviders({ children }: { children: ReactNode }) {
   return (
-    <ThemeProvider theme={theme}>
+    <CssVarsProvider defaultMode="system" modeStorageKey="brix-color-scheme">
+      <GlobalStyles
+        styles={{
+          ":root": {
+            "--brix-ui-corner-radius": uiCornerRadius,
+            "--TableCell-cornerRadius": "var(--brix-ui-corner-radius)",
+            "--unstable_actionRadius": "var(--brix-ui-corner-radius)"
+          },
+          ".MuiSheet-root": {
+            borderRadius: "var(--brix-ui-corner-radius)"
+          },
+          ".MuiTable-root": {
+            "--TableCell-cornerRadius": "var(--brix-ui-corner-radius)"
+          }
+        }}
+      />
       <CssBaseline />
       {children}
-    </ThemeProvider>
+    </CssVarsProvider>
   );
 }

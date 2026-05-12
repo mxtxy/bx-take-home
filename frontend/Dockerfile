@@ -20,7 +20,6 @@ COPY package.json package-lock.json* ./
 RUN npm ci --omit=dev
 COPY --from=build --chown=node:node /app/.next ./.next
 COPY --from=build --chown=node:node /app/public ./public
-RUN chown -R node:node /app
 USER node
 EXPOSE 3000
 CMD ["npm", "run", "start"]

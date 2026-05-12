@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import InitColorSchemeScript from "@mui/joy/InitColorSchemeScript";
 import type { ReactNode } from "react";
 import { AppProviders } from "../components/AppProviders";
 
@@ -9,8 +10,9 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <body>
+        <InitColorSchemeScript />
         <AppProviders>{children}</AppProviders>
       </body>
     </html>

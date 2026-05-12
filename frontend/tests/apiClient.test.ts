@@ -100,12 +100,14 @@ describe("api client", () => {
       login,
       logout,
       markNotificationRead,
-      rescheduleJob
+      rescheduleJob,
+      createQuote
     } = await import("../lib/api");
 
     await login("manager1@brix.test", "password123");
     await logout();
     await listQuotes();
+    await createQuote({ customerName: "Sydney Bakery", description: "Install replacement oven circuit" });
     await listTechnicians();
     await listJobs();
     await rescheduleJob(7, { technicianId: 2, startsAt: "2026-05-12T13:00:00Z" });
@@ -116,6 +118,7 @@ describe("api client", () => {
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
       "http://api.test/api/auth/login",
       "http://api.test/api/auth/logout",
+      "http://api.test/api/quotes",
       "http://api.test/api/quotes",
       "http://api.test/api/technicians",
       "http://api.test/api/jobs",
@@ -128,13 +131,25 @@ describe("api client", () => {
       email: "manager1@brix.test",
       password: "password123"
     });
-    expect(fetchMock.mock.calls[5][1]).toMatchObject({ method: "PATCH" });
-    expect(JSON.parse(fetchMock.mock.calls[5][1].body as string)).toEqual({
+    expect(fetchMock.mock.calls[3][1]).toMatchObject({ method: "POST" });
+    expect(JSON.parse(fetchMock.mock.calls[3][1].body as string)).toEqual({
+      customerName: "Sydney Bakery",
+      description: "Install replacement oven circuit"
+    });
+    expect(fetchMock.mock.calls[6][1]).toMatchObject({ method: "PATCH" });
+    expect(JSON.parse(fetchMock.mock.calls[6][1].body as string)).toEqual({
       technicianId: 2,
       startsAt: "2026-05-12T13:00:00Z"
     });
-    expect(JSON.parse(fetchMock.mock.calls[6][1].body as string)).toEqual({});
-    expect(JSON.parse(fetchMock.mock.calls[8][1].body as string)).toEqual({});
+    expect(JSON.parse(fetchMock.mock.calls[7][1].body as string)).toEqual({});
+    expect(JSON.parse(fetchMock.mock.calls[9][1].body as string)).toEqual({});
+  });
+
+  test("listNotifications returns unread count from the API response", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ notifications: [], unreadCount: 3 })));
+    const { listNotifications } = await import("../lib/api");
+
+    await expect(listNotifications()).resolves.toEqual({ notifications: [], unreadCount: 3 });
   });
 
   test("openEventSocket subscribes to WebSocket messages and closes the socket", async () => {
@@ -163,6 +178,38 @@ describe("api client", () => {
     expect(sockets[0].url).toBe("ws://socket.test/ws");
     expect(onEvent).toHaveBeenCalledWith({ type: "jobs.changed", jobId: 7 });
     expect(sockets[0].close).toHaveBeenCalled();
+  });
+
+  test("openEventSocket reconnects after an unexpected close", async () => {
+    vi.useFakeTimers();
+    process.env.NEXT_PUBLIC_WS_URL = "ws://socket.test/ws";
+    const sockets: FakeReconnectSocket[] = [];
+
+    class FakeReconnectSocket {
+      onmessage: ((message: MessageEvent<string>) => void) | null = null;
+      onclose: (() => void) | null = null;
+      close = vi.fn();
+      url: string;
+
+      constructor(url: string) {
+        this.url = url;
+        sockets.push(this);
+      }
+    }
+
+    vi.stubGlobal("WebSocket", FakeReconnectSocket);
+    const { openEventSocket } = await import("../lib/api");
+
+    const close = openEventSocket(() => undefined);
+    sockets[0].onclose?.();
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(sockets).toHaveLength(2);
+    close();
+    sockets[1].onclose?.();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(sockets).toHaveLength(2);
+    vi.useRealTimers();
   });
 });
 
