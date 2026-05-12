@@ -53,7 +53,7 @@ just test-e2e      # run Playwright against Docker Compose
 just test          # run all test suites
 ```
 
-## Decisions and Trade offs
+## Decisions and Trade Offs
 
 I approached this exercise by treating the scheduling rules as backend invariants first, then building the UI around those constraints. The most important requirement was preventing technicians from being double booked, especially when multiple managers attempt to schedule work at the same time.
 
@@ -71,13 +71,15 @@ The core design principle was that the backend is authoritative. The frontend ca
 
 I used Go for the backend because it keeps the business logic explicit, testable, and easy to reason about. The scheduling service owns the core workflows:
 
+- creating manager-owned quotes
 - assigning a quote to a technician 
 - rescheduling or reassigning a job
 - completing a job
 - creating notifications
+- writing schedule audit logs
 - producing post commit events for WebSocket delivery
 
-The most important rule is technician availability. A requested job conflicts with an existing job when:
+The most important rules are technician availability and overlap prevention. Availability is stored per technician and weekday in Australia/Sydney local time, while job timestamps are stored in UTC. Assignment/reschedule requests must fit inside the technician's Sydney-local available window. A requested job conflicts with an existing job when:
 
 ```sql
 existing.starts_at < requested.ends_at 
@@ -86,20 +88,20 @@ AND existing.ends_at > requested.starts_at
 
 The backend computes the 2 hour job window from the submitted start time. The client does not submit `endsAt`.
 
-To prevent race conditions, scheduling writes run inside MySQL transactions. The assignment flow locks the relevant quote and technician rows, checks for overlapping jobs, inserts the job, updates the quote, creates a notification, and commits. This ensures that concurrent manager requests cannot both schedule overlapping work for the same technician.  
+To prevent race conditions, scheduling writes run inside MySQL transactions. The assignment flow locks the relevant quote and technician rows, checks availability and overlapping jobs, inserts the job, updates the quote, writes an audit log, creates a notification, and commits. This ensures that concurrent manager requests cannot both schedule overlapping work for the same technician.
 
 I also used database constraints to protect the model:
 
-* foreign keys for jobs, quotes, managers, technicians, users, and notifications
+* foreign keys for organizations, jobs, quotes, managers, technicians, users, notifications, sessions, and audit logs
 * a unique constraint on `jobs.quote_id` so a quote cannot be scheduled twice
 * a check constraint to ensure job windows are exactly two hours  
-* indexes for technician schedule lookups and notification queries
+* indexes for technician schedule lookups, tenant filtering, sessions, audit logs, and notification queries
 
 This means the database still protects important invariants even if an application level mistake is introduced later.
 
 ### Frontend
 
-The frontend uses Next.js, React, TypeScript, and MUI. I kept the UI intentionally simple: managers can view unscheduled quotes, choose a technician, select a start time, assign or reschedule jobs, and see notifications. Technicians can view assigned jobs, complete them, and see notifications.  
+The frontend uses Next.js, React, TypeScript, and MUI. Managers can create quotes, view unscheduled quotes, choose a technician, select a start time, assign or reschedule jobs, and use the notification drawer. Technicians can view assigned jobs, complete them, and use the same notification drawer with unread counts and notification timestamps.
 
 I chose forms and lists rather than a full calendar because the timebox was 3–5 hours and the key evaluation point was scheduling correctness, not calendar UX. The UI still demonstrates the required flows without spending unnecessary time on drag and drop or complex visual scheduling.
 
@@ -119,13 +121,13 @@ For example:
 * `jobs.changed` triggers a job list refetch 
 * `quotes.changed` triggers an unscheduled quote refetch for managers
 
-This keeps client state simple and avoids duplicating business rules in WebSocket message handling.
+This keeps client state simple and avoids duplicating business rules in WebSocket message handling. The frontend reconnects the event socket after an unexpected close and also refreshes on window focus to recover stale UI state.
 
 The WebSocket hub is in process, which is appropriate for this take home exercise. In production, a multi instance deployment would need Redis Pub/Sub, NATS, or another fanout mechanism.
 
 ### Authentication and Authorisation 
 
-Auth is deliberately simple. The app uses seeded users, email/password login, and an HttpOnly session cookie. This is enough to demonstrate role based access control without spending the timebox on user registration, password reset, refresh tokens, or account management.
+The app uses seeded users, email/password login, an HttpOnly signed session cookie, and a server-side `sessions` table. Logout revokes the active session, session expiry is enforced server side, and tokens carry the organization and session identifiers needed for authorization.
 
 Authorisation is enforced server side:  
 
@@ -134,8 +136,9 @@ Authorisation is enforced server side:
 * only technicians can complete jobs
 * only the assigned technician can complete a job 
 * users can only read and update their own notifications
+* users can only access data inside their organization
 
-In production, I would extend this with stronger session management, CSRF protection, password reset, audit logs, tenancy, and organisation level authorisation.
+Request/trace headers are propagated on every HTTP response through `X-Request-Id` and `Traceparent`. In production, I would still extend this with CSRF protection, password reset, and distributed tracing/export infrastructure.
 
 ### Testing and Test Driven Development
 
@@ -176,13 +179,12 @@ The AI generated work was constrained by tests and reviewed against the business
 
 To stay within the intended scope, I intentionally kept several areas simple:
 
-* Auth uses seeded users and an HttpOnly cookie, but does not include registration, password reset, or production grade session lifecycle management.
+* Auth uses seeded users and an HttpOnly cookie with server-side sessions, but does not include registration or password reset.
 * The UI uses forms and lists instead of a full calendar.
 * WebSocket messages are refresh signals rather than full real time state synchronisation.  
 * The WebSocket hub is in process rather than distributed.
 * Notifications are stored and displayed in app, but not sent by email or SMS.
-* There is no tenant or organisation model.
-* There are no technician availability, travel time, or business hour rules.
+* Technician availability is supported, but travel time calculation is not.
 
 These were deliberate trade offs to keep the implementation focussed on the core domain problem: assigning quotes to technicians safely and correctly.
 
@@ -190,12 +192,8 @@ These were deliberate trade offs to keep the implementation focussed on the core
 
 With more time, I would add:
 
-* organisation tenancy
 * a proper calendar interface 
-* technician availability rules
-* audit logs for scheduling changes
 * distributed WebSocket fanout
 * email or SMS notifications  
-* better observability and tracing
-* stronger auth and session hardening
-* richer end to end tests around reconnects and stale UI state
+* CSRF protection and password reset flows
+* exported production tracing and metrics

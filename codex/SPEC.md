@@ -4,7 +4,7 @@
 
 This document is the implementation contract for the take-home project.
 
-The project is a small end-to-end service scheduling and notification system. Managers assign unscheduled quotes to technicians in fixed two-hour windows. The backend prevents double-booking. Assignment, update, and completion events create persisted notifications and publish WebSocket refresh events.
+The project is a small end-to-end service scheduling and notification system. Managers create quotes and assign unscheduled quotes to technicians in fixed two-hour windows. The backend enforces organization tenancy, technician availability, and double-booking prevention. Assignment, update, and completion events create audit logs, persisted notifications, and WebSocket refresh events.
 
 This specification is intentionally explicit. If implementation behavior is not described here, it is out of scope for the take-home.
 
@@ -23,12 +23,12 @@ These choices are fixed for the project.
 | Database driver | `github.com/go-sql-driver/mysql` |
 | Migrations | Plain SQL migrations executed by `backend/cmd/migrate` |
 | Seed data | Plain SQL seed file executed by `backend/cmd/seed` |
-| Authentication | Seeded users, bcrypt password hashes, HttpOnly signed session cookie |
+| Authentication | Seeded users, bcrypt password hashes, HttpOnly signed server-side session cookie |
 | Commands | HTTP/JSON |
 | Live updates | WebSocket event notifications only |
 | Notifications | Persisted in MySQL |
 | Frontend | Next.js App Router with TypeScript |
-| UI | Material UI, using `@mui/material`, `@emotion/react`, `@emotion/styled` |
+| UI | MUI Joy UI, using `@mui/joy`, `@emotion/react`, `@emotion/styled` |
 | Frontend package manager | npm |
 | Local runtime | Docker Compose |
 | Compose filename | `compose.yaml` |
@@ -47,18 +47,16 @@ Do not implement these items for the take-home.
 2. Password reset.
 3. Refresh tokens.
 4. Production-grade CSRF hardening.
-5. Multi-tenant organization scoping.
-6. Drag-and-drop calendar UI.
-7. Technician availability rules.
-8. Business-hours validation.
-9. Travel-time calculation.
-10. Email, SMS, or push delivery.
-11. Distributed WebSocket fanout.
-12. Redis, NATS, Kafka, or other broker infrastructure.
-13. Kubernetes.
-14. Production observability.
-15. Next.js Server Actions for scheduling commands.
-16. Scheduling commands over WebSocket.
+5. Drag-and-drop calendar UI.
+6. Global business-hours validation beyond technician availability rules.
+7. Travel-time calculation.
+8. Email, SMS, or push delivery.
+9. Distributed WebSocket fanout.
+10. Redis, NATS, Kafka, or other broker infrastructure.
+11. Kubernetes.
+12. External production metrics/tracing export infrastructure.
+13. Next.js Server Actions for scheduling commands.
+14. Scheduling commands over WebSocket.
 
 ---
 
@@ -66,20 +64,22 @@ Do not implement these items for the take-home.
 
 ### 3.1 Core Requirements
 
-1. The system contains managers, technicians, quotes, jobs, and notifications.
-2. A manager can view unscheduled quotes.
-3. A manager can assign an unscheduled quote to a technician.
+1. The system contains organizations, managers, technicians, quotes, jobs, notifications, sessions, technician availability rules, and schedule audit logs.
+2. A manager can create and view organization-scoped unscheduled quotes.
+3. A manager can assign an unscheduled quote to an organization-scoped technician.
 4. A manager selects a two-hour window by selecting a start time.
 5. The backend computes the end time as start time plus two hours.
 6. The backend prevents overlapping jobs for the same technician.
-7. A technician can view their assigned jobs.
-8. A technician can mark their own scheduled job as completed.
-9. A job has lifecycle states `scheduled` and `completed`.
-10. Assignment creates a technician notification.
-11. Reschedule or reassignment creates technician notification(s).
-12. Completion creates a manager notification.
-13. Notifications are persisted in MySQL.
-14. WebSocket events notify connected clients that they should refetch affected data.
+7. The backend rejects assignment/reschedule requests outside the technician's availability rules.
+8. A technician can view their assigned jobs.
+9. A technician can mark their own scheduled job as completed.
+10. A job has lifecycle states `scheduled` and `completed`.
+11. Assignment creates a technician notification and schedule audit log.
+12. Reschedule or reassignment creates technician notification(s) and a schedule audit log.
+13. Completion creates a manager notification and a schedule audit log.
+14. Notifications are persisted in MySQL and include unread counts for API/UI display.
+15. WebSocket events notify connected clients that they should refetch affected data.
+16. HTTP responses include `X-Request-Id` and `Traceparent` headers for request correlation.
 
 ### 3.2 Optional Requirement Included in This Spec
 
@@ -207,8 +207,8 @@ Passwords must be stored as bcrypt hashes in the seed data.
 7. The backend computes `endsAt = startsAt + 2 hours`.
 8. The backend rejects any client-provided `endsAt` field by ignoring it if decoding into strict types, or by using request structs that do not contain an `endsAt` field.
 9. Past timestamps are allowed for this take-home.
-10. Jobs can be scheduled at any time of day.
-11. Business-hours validation is intentionally not implemented.
+10. Jobs can be scheduled only inside the assigned technician's availability rules.
+11. Global business-hours validation beyond technician availability is intentionally not implemented.
 12. Start times must be minute-aligned.
 13. Seconds and nanoseconds in `startsAt` must be zero.
 
@@ -1347,19 +1347,19 @@ The manager dashboard must show:
 9. Reschedule controls for scheduled jobs.
 10. Visible conflict error when scheduling fails.
 
-Use MUI components such as:
+Use Joy UI components such as:
 
-1. `Container`
-2. `AppBar`
-3. `Toolbar`
+1. `Box`
+2. `Sheet`
+3. `Stack`
 4. `Typography`
-5. `Card`
+5. `FormControl`
 6. `Table`
-7. `Select`
-8. `TextField`
+7. `List`
+8. `Input`
 9. `Button`
 10. `Alert`
-11. `Snackbar`
+11. `IconButton`
 12. `Chip`
 
 Do not use MUI X Data Grid.
